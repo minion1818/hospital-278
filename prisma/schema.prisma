@@ -1,0 +1,75 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  STAFF
+  REVIEWER
+}
+
+enum RequestStatus {
+  DRAFT
+  PENDING_REVIEW
+  SUBMITTED
+  APPROVED
+  DENIED
+  NEEDS_INFO
+}
+
+model User {
+  id    String @id @default(cuid())
+  name  String
+  email String @unique
+  role  Role
+}
+
+model Patient {
+  id        String             @id @default(cuid())
+  firstName String
+  lastName  String
+  dob       DateTime
+  gender    String
+  memberId  String
+  payerName String
+  requests  PriorAuthRequest[]
+}
+
+model PriorAuthRequest {
+  id             String        @id @default(cuid())
+  status         RequestStatus @default(DRAFT)
+  patientId      String
+  patient        Patient       @relation(fields: [patientId], references: [id])
+  providerName   String
+  providerNpi    String
+  diagnosisCode  String
+  procedureCode  String
+  serviceDate    DateTime
+  raw278Request  String?
+  raw278Response String?
+  denialReason   String?
+  createdById    String
+  reviewedById   String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  auditLogs      AuditLog[]
+}
+
+model AuditLog {
+  id        String           @id @default(cuid())
+  requestId String
+  request   PriorAuthRequest @relation(fields: [requestId], references: [id])
+  actor     String
+  action    String
+  details   String?
+  createdAt DateTime         @default(now())
+}
