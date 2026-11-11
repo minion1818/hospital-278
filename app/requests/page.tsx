@@ -1,6 +1,7 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { db } from "@/lib/db";
-import type { RequestStatus } from "@/lib/generated/prisma/enums";
+import { StatusBadge } from "@/components/status-badge";
 import {
   Table,
   TableBody,
@@ -9,24 +10,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-// Record<RequestStatus, ...> makes tsc fail if a status is added to the enum without a style
-const STATUS_STYLES: Record<RequestStatus, string> = {
-  DRAFT: "bg-gray-100 text-gray-700",
-  PENDING_REVIEW: "bg-yellow-100 text-yellow-800",
-  SUBMITTED: "bg-blue-100 text-blue-800",
-  IN_REVIEW: "bg-indigo-100 text-indigo-800",
-  APPROVED: "bg-green-100 text-green-800",
-  PARTIALLY_APPROVED: "bg-lime-100 text-lime-800",
-  DENIED: "bg-red-100 text-red-800",
-  PENDED: "bg-orange-100 text-orange-800",
-  REJECTED: "bg-rose-200 text-rose-900",
-  SERVICE_COMPLETED: "bg-teal-100 text-teal-800",
-};
-
-function formatStatus(status: string) {
-  return status.replaceAll("_", " ");
-}
 
 async function RequestsTable() {
   const requests = await db.priorAuthRequest.findMany({
@@ -54,9 +37,14 @@ async function RequestsTable() {
         </TableHeader>
         <TableBody>
           {requests.map((r) => (
-            <TableRow key={r.id}>
+            <TableRow key={r.id} className="hover:bg-gray-50">
               <TableCell className="font-medium">
-                {r.patient.firstName} {r.patient.lastName}
+                <Link
+                  href={`/requests/${r.id}`}
+                  className="text-blue-700 hover:underline"
+                >
+                  {r.patient.firstName} {r.patient.lastName}
+                </Link>
               </TableCell>
               <TableCell>{r.patient.payerName}</TableCell>
               <TableCell>{r.providerName}</TableCell>
@@ -64,13 +52,7 @@ async function RequestsTable() {
               <TableCell>{r.procedureCode}</TableCell>
               <TableCell>{r.serviceDate.toLocaleDateString("en-US")}</TableCell>
               <TableCell>
-                <span
-                  className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${
-                    STATUS_STYLES[r.status]
-                  }`}
-                >
-                  {formatStatus(r.status)}
-                </span>
+                <StatusBadge status={r.status} />
               </TableCell>
             </TableRow>
           ))}
