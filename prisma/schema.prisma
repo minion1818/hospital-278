@@ -21,9 +21,13 @@ enum RequestStatus {
   DRAFT
   PENDING_REVIEW
   SUBMITTED
+  IN_REVIEW
   APPROVED
+  PARTIALLY_APPROVED
   DENIED
-  NEEDS_INFO
+  PENDED
+  REJECTED
+  SERVICE_COMPLETED
 }
 
 model User {
@@ -45,23 +49,28 @@ model Patient {
 }
 
 model PriorAuthRequest {
-  id             String        @id @default(cuid())
-  status         RequestStatus @default(DRAFT)
-  patientId      String
-  patient        Patient       @relation(fields: [patientId], references: [id])
-  providerName   String
-  providerNpi    String
-  diagnosisCode  String
-  procedureCode  String
-  serviceDate    DateTime
-  raw278Request  String?
-  raw278Response String?
-  denialReason   String?
-  createdById    String
-  reviewedById   String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  auditLogs      AuditLog[]
+  id                         String        @id @default(cuid())
+  status                     RequestStatus @default(DRAFT)
+  patientId                  String
+  patient                    Patient       @relation(fields: [patientId], references: [id])
+  providerName               String
+  providerNpi                String
+  diagnosisCode              String
+  procedureCode              String
+  serviceDate                DateTime
+  unitsRequested             Int           @default(1)
+  unitsApproved              Int? // set only when the payer approves or partially approves
+  clinicalNotesAttached      Boolean       @default(false)
+  conservativeTreatmentTried Boolean       @default(false)
+  raw278Request              String?
+  raw278Response             String?
+  decisionReason             String? // payer's reason for denial, pend, rejection, or partial approval
+  decisionAt                 DateTime?
+  createdById                String
+  reviewedById               String?
+  createdAt                  DateTime      @default(now())
+  updatedAt                  DateTime      @updatedAt
+  auditLogs                  AuditLog[]
 }
 
 model AuditLog {
