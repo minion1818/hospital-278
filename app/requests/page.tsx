@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { StatusBadge } from "@/components/status-badge";
+import { buttonVariants } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -65,7 +66,12 @@ async function RequestsTable() {
 export default function RequestsPage() {
   return (
     <main className="mx-auto max-w-6xl p-8">
-      <h1 className="mb-1 text-2xl font-semibold">Prior Authorization Requests</h1>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Prior Authorization Requests</h1>
+        <Link href="/requests/new" className={buttonVariants()}>
+          New request
+        </Link>
+      </div>
       <Suspense fallback={<p className="text-sm text-gray-500">Loading requests…</p>}>
         <RequestsTable />
       </Suspense>
