@@ -9,14 +9,18 @@ export function todayIsoDate(now = new Date()) {
   return `${y}-${m}-${d}`;
 }
 
-/** Parses YYYY-MM-DD into a local-midnight Date, or null if it isn't a real calendar date. */
+/**
+ * Parses YYYY-MM-DD into a Date at UTC midnight, or null if it isn't a real calendar date.
+ * Date-only values (service date, DOB) are stored at UTC midnight and formatted in
+ * UTC everywhere (UI and X12), so they never shift by a day across time zones.
+ */
 export function parseIsoDate(value: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return null;
   const [y, m, d] = match.slice(1).map(Number);
-  const date = new Date(y, m - 1, d);
+  const date = new Date(Date.UTC(y, m - 1, d));
   // Rejects rollovers like 2026-02-30 -> March 2
-  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return null;
   return date;
 }
 

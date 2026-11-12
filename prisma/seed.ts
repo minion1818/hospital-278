@@ -2,6 +2,8 @@ import "dotenv/config";
 import { PrismaClient } from "../lib/generated/prisma/client";
 import type { RequestStatus } from "../lib/generated/prisma/enums";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { generate278Request } from "../lib/x12/generate278";
+import { build278Input } from "../lib/x12/from-request";
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
@@ -9,6 +11,12 @@ const prisma = new PrismaClient({ adapter });
 const HOUR = 3600000;
 const DAY = 24 * HOUR;
 const daysFromNow = (d: number) => new Date(Date.now() + d * DAY);
+
+/** Date-only values are stored at UTC midnight (see parseIsoDate in lib/validation/request.ts). */
+const utcDateFromToday = (d: number) => {
+  const t = new Date();
+  return new Date(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate() + d));
+};
 
 const PAYER_ACTOR = "Payer (simulated)";
 
@@ -129,6 +137,7 @@ function buildHistory(
   createdAt: Date,
   staffName: string,
   reviewerName: string,
+  controlNumber: number,
 ): { logs: LogEntry[]; decisionAt: Date | null } {
   const logs: LogEntry[] = [];
   let t = createdAt.getTime();
@@ -142,7 +151,8 @@ function buildHistory(
   if (r.status === "PENDING_REVIEW") return { logs, decisionAt: null };
 
   logs.push({ actor: reviewerName, action: "APPROVED_FOR_SUBMISSION", createdAt: step(5) });
-  logs.push({ actor: staffName, action: "SUBMITTED_TO_PAYER", details: "278 request transmitted", createdAt: step(1) });
+  // Same wording/actor as the APPROVE_AND_SEND transition in lib/workflow.ts
+  logs.push({ actor: reviewerName, action: "SUBMITTED_TO_PAYER", details: `278 request transmitted (control number ${controlNumber})`, createdAt: step(0.01) });
   if (r.status === "SUBMITTED") return { logs, decisionAt: null };
 
   // Rejections happen at intake validation, before clinical review
@@ -235,36 +245,56 @@ async function main() {
   ];
 
   let logCount = 0;
+  let ediCount = 0;
   for (const r of REQUESTS) {
     const createdAt = daysFromNow(-r.createdDaysAgo);
-    const { logs, decisionAt } = buildHistory(r, createdAt, staff.name, reviewer.name);
     const reviewed = r.status !== "DRAFT" && r.status !== "PENDING_REVIEW";
 
-    await prisma.priorAuthRequest.create({
+    // Create first: controlNumber comes from the database sequence
+    const request = await prisma.priorAuthRequest.create({
       data: {
         status: r.status,
         patientId: patients[r.patient].id,
         ...providers[r.provider],
         diagnosisCode: r.service.diagnosisCode,
         procedureCode: r.service.procedureCode,
-        serviceDate: daysFromNow(r.serviceInDays),
+        serviceDate: utcDateFromToday(r.serviceInDays),
         unitsRequested: r.unitsRequested ?? 1,
         unitsApproved: r.unitsApproved ?? null,
         clinicalNotesAttached: r.clinicalNotesAttached,
         conservativeTreatmentTried: r.conservativeTreatmentTried,
         decisionReason: r.decisionReason ?? null,
-        decisionAt,
         createdById: staff.id,
         reviewedById: reviewed ? reviewer.id : null,
         createdAt,
+      },
+      include: { patient: true },
+    });
+
+    const sentToPayer = reviewed; // reviewer approval = 278 transmitted
+    const { logs, decisionAt } = buildHistory(
+      r,
+      createdAt,
+      staff.name,
+      reviewer.name,
+      request.controlNumber,
+    );
+
+    await prisma.priorAuthRequest.update({
+      where: { id: request.id },
+      data: {
+        decisionAt,
+        // Every request that reached the payer carries the 278 that was "sent"
+        raw278Request: sentToPayer ? generate278Request(build278Input(request)) : null,
         auditLogs: { create: logs },
       },
     });
     logCount += logs.length;
+    if (sentToPayer) ediCount++;
   }
 
   console.log(
-    `Seeded 2 users, ${patients.length} patients, ${REQUESTS.length} requests, ${logCount} audit log entries.`,
+    `Seeded 2 users, ${patients.length} patients, ${REQUESTS.length} requests (${ediCount} with a generated 278), ${logCount} audit log entries.`,
   );
 }
 

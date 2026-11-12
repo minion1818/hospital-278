@@ -4,12 +4,29 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getActingRole } from "@/lib/demo-session";
+import type { RequestStatus } from "@/lib/generated/prisma/enums";
+import { ROLE_LABELS, availableTransitions, waitingMessage } from "@/lib/workflow";
+import { ActionsPanel, type TransitionOption } from "./actions-panel";
+import { CopyButton } from "@/components/copy-button";
+import { buttonVariants } from "@/components/ui/button";
+import { readDelimiters } from "@/lib/x12/parse278";
 
+// Date-only values are stored at UTC midnight, so format them in UTC
 const formatDate = (d: Date) =>
-  d.toLocaleDateString("en-US", { dateStyle: "medium" });
+  d.toLocaleDateString("en-US", { dateStyle: "medium", timeZone: "UTC" });
 
 const formatDateTime = (d: Date) =>
   d.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+
+const DECIDED_STATUSES = new Set<RequestStatus>([
+  "APPROVED",
+  "PARTIALLY_APPROVED",
+  "DENIED",
+  "PENDED",
+  "REJECTED",
+  "SERVICE_COMPLETED",
+]);
 
 const yesNo = (b: boolean) => (b ? "Yes" : "No");
 
@@ -19,14 +36,20 @@ function humanizeAction(action: string) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** X12 is often stored on one line; put each segment (terminated by ~) on its own line. */
+/** X12 is often stored on one line; put each segment on its own line. */
 function formatEdi(raw: string) {
   if (raw.includes("\n")) return raw;
+  let terminator = "~";
+  try {
+    terminator = readDelimiters(raw).segment; // the ISA declares the real terminator
+  } catch {
+    // Not a well-formed interchange; fall back to the common "~"
+  }
   return raw
-    .split("~")
+    .split(terminator)
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((s) => `${s}~`)
+    .map((s) => `${s}${terminator}`)
     .join("\n");
 }
 
@@ -68,6 +91,20 @@ async function RequestDetail({
 
   const { patient } = request;
   const showDecision = request.decisionAt != null || request.decisionReason != null;
+  // A reopened request keeps the payer's earlier decision so staff can see what to fix
+  const decisionIsCurrent = DECIDED_STATUSES.has(request.status);
+
+  // Demo stand-in for real auth: the role comes from a cookie (read inside Suspense)
+  const role = await getActingRole();
+  const transitions: TransitionOption[] = availableTransitions(request.status, role).map(
+    (t) => ({
+      key: t.key,
+      label: t.label,
+      description: t.description,
+      noteRequired: t.noteRequired,
+      notePrompt: t.notePrompt,
+    }),
+  );
 
   return (
     <>
@@ -82,6 +119,23 @@ async function RequestDetail({
           {patient.payerName} · Member ID {patient.memberId}
         </p>
       </header>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-gray-500">
+            Acting as {ROLE_LABELS[role]} (switch in the header).
+          </p>
+          {transitions.length > 0 ? (
+            // Keyed by status: a successful transition remounts the panel fresh
+            <ActionsPanel key={request.status} requestId={request.id} transitions={transitions} />
+          ) : (
+            <p className="text-sm text-gray-700">{waitingMessage(request.status, role)}</p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -112,7 +166,7 @@ async function RequestDetail({
         {showDecision && (
           <Card>
             <CardHeader>
-              <CardTitle>Payer decision</CardTitle>
+              <CardTitle>{decisionIsCurrent ? "Payer decision" : "Previous payer decision"}</CardTitle>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2">
@@ -181,7 +235,25 @@ async function RequestDetail({
           <CardTitle>EDI 278</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          <EdiSection title="Request" raw={request.raw278Request} />
+          <EdiSection
+            title="Request"
+            raw={request.raw278Request}
+            actions={
+              request.raw278Request && (
+                <>
+                  <CopyButton text={formatEdi(request.raw278Request)} />
+                  {/* Plain <a>: a route handler download, not a page navigation */}
+                  <a
+                    href={`/requests/${request.id}/278`}
+                    download
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                  >
+                    Download .edi
+                  </a>
+                </>
+              )
+            }
+          />
           <EdiSection title="Response" raw={request.raw278Response} />
         </CardContent>
       </Card>
@@ -198,10 +270,21 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function EdiSection({ title, raw }: { title: string; raw: string | null }) {
+function EdiSection({
+  title,
+  raw,
+  actions,
+}: {
+  title: string;
+  raw: string | null;
+  actions?: ReactNode;
+}) {
   return (
     <section>
-      <h3 className="mb-2 text-sm font-medium text-gray-700">{title}</h3>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium text-gray-700">{title}</h3>
+        {actions && <div className="flex gap-2">{actions}</div>}
+      </div>
       {raw ? (
         <pre className="overflow-x-auto rounded-md bg-gray-50 p-3 font-mono text-xs leading-relaxed text-gray-800 ring-1 ring-gray-200">
           {formatEdi(raw)}

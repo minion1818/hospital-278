@@ -50,6 +50,7 @@ model Patient {
 
 model PriorAuthRequest {
   id                         String        @id @default(cuid())
+  controlNumber              Int           @unique @default(autoincrement()) // X12 ISA13/GS06/ST02
   status                     RequestStatus @default(DRAFT)
   patientId                  String
   patient                    Patient       @relation(fields: [patientId], references: [id])

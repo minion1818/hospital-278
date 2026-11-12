@@ -42,3 +42,28 @@ export const findDiagnosis = (code: string): Diagnosis | undefined =>
 
 export const findProvider = (npi: string): Provider | undefined =>
   PROVIDERS.find((p) => p.npi === npi);
+
+/**
+ * Payers (SIMULATED). The payer IDs are made up for this demo; real payer IDs
+ * come from the payer or clearinghouse. Keyed by the payerName stored on Patient.
+ */
+export const PAYERS = [
+  { name: "ACME Health Plan", payerId: "SIMACME01" },
+  { name: "Summit Insurance", payerId: "SIMSUMMT2" },
+  { name: "Northwind Health", payerId: "SIMNWIND3" },
+] as const satisfies readonly { name: string; payerId: string }[];
+
+export type Payer = (typeof PAYERS)[number];
+
+export const findPayer = (name: string): Payer | undefined =>
+  PAYERS.find((p) => p.name === name);
+
+/**
+ * Submitter / sender (SIMULATED). SENDER_ID is used in ISA06/GS02 and, prefixed
+ * with "9" (user-assigned), as the 10-character TRN03 originating company id,
+ * so it must be exactly 9 characters.
+ */
+export const SENDER = {
+  id: "DEMOHOSP1",
+  name: "Demo General Hospital",
+} as const;
