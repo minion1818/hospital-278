@@ -201,3 +201,52 @@ X12 delimiter characters, so they come back unchanged. MSG is cut to 264 charact
   requested SV1 for non-certified outcomes. A real payer may send fewer.
 - Plus the request-side uncertainties listed under "278 generation" (`DTP*472` vs `AAH`
   in 2000E, the fixed `UM` values).
+
+## How the hospital and the simulated payer talk
+
+The hospital app and the mock payer behave like two separate systems sharing one
+Postgres database for convenience. They only exchange **EDI text** (the X12 278 request
+and response) plus an **attachments object** standing in for the separate X12 275
+attachment transaction (`clinicalNotesAttached`, `conservativeTreatmentDocumented`).
+
+```
+ HOSPITAL (lib/workflow-db, lib/hospital)     ORCHESTRATOR (lib/integration)      PAYER (lib/payer)
+ ────────────────────────────────────────     ──────────────────────────────      ─────────────────
+ Reviewer: Approve and send
+   generate 278, status SUBMITTED  ───────▶   submitToPayer(278, attachments) ──▶ receive278 → PayerMessage RECEIVED
+                                                                                   (ack in 2s, respond in 8s)
+ Browser on a waiting request  ───────────▶   POST /api/payer/tick → tick(now) ──▶ processDue(now)
+                                                                                     RECEIVED  → IN_REVIEW
+   markInReview: SUBMITTED → IN_REVIEW ◀────  for each acknowledged message   ◀──   IN_REVIEW → RESPONDED (AUTO only):
+                                                                                     evaluateRequest + generate278Response
+   applyPayerResponse: IN_REVIEW → decision ◀ for each undelivered response   ◀──
+                                              then markDelivered ─────────────────▶ deliveredAt set
+```
+
+**Status flow:** `SUBMITTED` → (payer acknowledges) `IN_REVIEW` → (payer decides)
+`APPROVED` | `PARTIALLY_APPROVED` | `DENIED` | `PENDED` | `REJECTED`
+
+- **Polling stands in for infrastructure.** `tick` and `POST /api/payer/tick`, called
+  every 3 seconds by `components/payer-ticker.tsx` while a page shows a request waiting
+  on the payer, stand in for a background worker, queue consumer or webhook. Nothing
+  advances while no page is polling. `tick(now)` takes the time as an argument, which is
+  how `npm run test:flow` drives it deterministically.
+- **Safe to repeat.** The payer claims each message with a conditional update, so
+  concurrent ticks can't acknowledge or decide a message twice. Responses are delivered
+  at least once: every responded, undelivered message is returned until `markDelivered`
+  runs. `applyPayerResponse` only acts while a request is `SUBMITTED` or `IN_REVIEW`, so
+  a repeat delivery is ignored.
+- **Modes.** `PayerSettings.mode` is `AUTO` (the rules decide after
+  `responseDelaySeconds`) or `MANUAL` (messages are acknowledged but wait in `IN_REVIEW`
+  for a human decision, to be built next).
+- **Failed transmission.** If sending to the payer fails, the request stays `SUBMITTED`
+  and the timeline shows "Transmission to payer failed" with the error.
+- **Flow test:** `npm run test:flow` runs the whole loop against a separate
+  `<db>_test` database with injected times.
+
+**Architecture rule:** the payer side (`lib/payer/*` and the `Payer*` tables) never
+imports hospital modules and never reads or writes `PriorAuthRequest`, `Patient` or
+`AuditLog`. The hospital side never imports `lib/payer/*` or reads the payer tables.
+Only `lib/integration/` touches both, and only by passing EDI strings and the
+attachments object. Shared, side-neutral code: `lib/x12/*` (EDI format), `lib/catalog.ts`
+(reference code sets and simulated payer ids) and `lib/db.ts` (the connection).

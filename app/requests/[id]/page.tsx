@@ -9,6 +9,7 @@ import type { RequestStatus } from "@/lib/generated/prisma/enums";
 import { ROLE_LABELS, availableTransitions, waitingMessage } from "@/lib/workflow";
 import { ActionsPanel, type TransitionOption } from "./actions-panel";
 import { CopyButton } from "@/components/copy-button";
+import { PayerTicker } from "@/components/payer-ticker";
 import { buttonVariants } from "@/components/ui/button";
 import { readDelimiters } from "@/lib/x12/parse278";
 
@@ -120,6 +121,8 @@ async function RequestDetail({
         </p>
       </header>
 
+      <PayerTicker active={request.status === "SUBMITTED" || request.status === "IN_REVIEW"} />
+
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>Actions</CardTitle>
@@ -177,6 +180,11 @@ async function RequestDetail({
                 {request.status === "PARTIALLY_APPROVED" && (
                   <Field label="Units approved">
                     {request.unitsApproved ?? 0} of {request.unitsRequested}
+                  </Field>
+                )}
+                {request.authorizationNumber && (
+                  <Field label="Authorization number">
+                    <span className="font-mono">{request.authorizationNumber}</span>
                   </Field>
                 )}
               </dl>
@@ -240,21 +248,22 @@ async function RequestDetail({
             raw={request.raw278Request}
             actions={
               request.raw278Request && (
-                <>
-                  <CopyButton text={formatEdi(request.raw278Request)} />
-                  {/* Plain <a>: a route handler download, not a page navigation */}
-                  <a
-                    href={`/requests/${request.id}/278`}
-                    download
-                    className={buttonVariants({ variant: "outline", size: "sm" })}
-                  >
-                    Download .edi
-                  </a>
-                </>
+                <EdiActions raw={request.raw278Request} href={`/requests/${request.id}/278`} />
               )
             }
           />
-          <EdiSection title="Response" raw={request.raw278Response} />
+          <EdiSection
+            title="Response"
+            raw={request.raw278Response}
+            actions={
+              request.raw278Response && (
+                <EdiActions
+                  raw={request.raw278Response}
+                  href={`/requests/${request.id}/278/response`}
+                />
+              )
+            }
+          />
         </CardContent>
       </Card>
     </>
@@ -266,6 +275,18 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     <>
       <dt className="text-gray-500">{label}</dt>
       <dd className="text-gray-900">{children}</dd>
+    </>
+  );
+}
+
+function EdiActions({ raw, href }: { raw: string; href: string }) {
+  return (
+    <>
+      <CopyButton text={formatEdi(raw)} />
+      {/* Plain <a>: a route handler download, not a page navigation */}
+      <a href={href} download className={buttonVariants({ variant: "outline", size: "sm" })}>
+        Download .edi
+      </a>
     </>
   );
 }

@@ -1,0 +1,84 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+
+const INTERVAL_MS = 3000;
+/** Stop after this many quiet ticks (~2 min) so a stuck request can't poll forever. */
+const MAX_IDLE_TICKS = 40;
+
+type TickResponse = { acknowledged: number; responded: number; pending: number };
+
+/**
+ * Demo stand-in for a background worker: while the page shows a request that
+ * is waiting on the payer, POST /api/payer/tick every few seconds and refresh
+ * the page when something changed. Stops when nothing is pending.
+ */
+export function PayerTicker({ active }: { active: boolean }) {
+  const router = useRouter();
+  const [running, setRunning] = useState(active);
+
+  // A server re-render after refresh may flip `active` (e.g. the decision
+  // arrived, or a new request was sent). Adjust state during render when the
+  // prop changes, React's recommended alternative to syncing in an effect.
+  const [prevActive, setPrevActive] = useState(active);
+  if (active !== prevActive) {
+    setPrevActive(active);
+    setRunning(active);
+  }
+
+  useEffect(() => {
+    if (!running) return;
+    let cancelled = false;
+    let idle = 0;
+    let inFlight = false;
+
+    const run = async () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const res = await fetch("/api/payer/tick", { method: "POST", cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as TickResponse;
+        if (cancelled) return;
+
+        if (data.acknowledged > 0 || data.responded > 0) {
+          idle = 0;
+          router.refresh();
+        } else if (++idle >= MAX_IDLE_TICKS) {
+          setRunning(false);
+        }
+        if (data.pending === 0) {
+          router.refresh(); // pick up anything another tab applied
+          setRunning(false);
+        }
+      } catch {
+        // network blip: try again next interval
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = setInterval(run, INTERVAL_MS);
+    void run();
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [running, router]);
+
+  if (!running) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] z-50 flex items-center gap-2 rounded-full border bg-white/95 px-3 py-1.5 text-xs text-gray-600 shadow-sm"
+    >
+      <span className="relative flex size-2">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-indigo-400 opacity-75" />
+        <span className="relative inline-flex size-2 rounded-full bg-indigo-500" />
+      </span>
+      Payer is processing…
+    </div>
+  );
+}

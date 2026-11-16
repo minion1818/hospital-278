@@ -1,12 +1,11 @@
 import "dotenv/config";
-import { PrismaClient } from "../lib/generated/prisma/client";
 import type { RequestStatus } from "../lib/generated/prisma/enums";
-import { PrismaPg } from "@prisma/adapter-pg";
+// Shared client: the payer inbox (used below via the orchestrator) writes through it too
+import { db as prisma } from "../lib/db";
+import { PAYERS, findPayer } from "../lib/catalog";
+import { submitToPayer } from "../lib/integration/tick";
 import { generate278Request } from "../lib/x12/generate278";
 import { build278Input } from "../lib/x12/from-request";
-
-const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
-const prisma = new PrismaClient({ adapter });
 
 const HOUR = 3600000;
 const DAY = 24 * HOUR;
@@ -65,6 +64,8 @@ const REQUESTS: SeedRequest[] = [
   // PENDING_REVIEW: waiting on internal reviewer
   { status: "PENDING_REVIEW", patient: 1, provider: 1, service: SERVICES.kneeMri, createdDaysAgo: 3, serviceInDays: 12, clinicalNotesAttached: true, conservativeTreatmentTried: true },
   { status: "PENDING_REVIEW", patient: 4, provider: 0, service: SERVICES.brainMri, createdDaysAgo: 2, serviceInDays: 9, clinicalNotesAttached: true, conservativeTreatmentTried: false },
+  // Zed Unknown is NOT on the payer roster: approving this demos a "member not found" (AAA 75) rejection
+  { status: "PENDING_REVIEW", patient: 6, provider: 2, service: SERVICES.kneeMri, createdDaysAgo: 1, serviceInDays: 10, clinicalNotesAttached: true, conservativeTreatmentTried: true },
 
   // SUBMITTED: sent to payer, not yet picked up
   { status: "SUBMITTED", patient: 2, provider: 2, service: SERVICES.cardiacCath, createdDaysAgo: 4, serviceInDays: 8, clinicalNotesAttached: true, conservativeTreatmentTried: true },
@@ -138,6 +139,7 @@ function buildHistory(
   staffName: string,
   reviewerName: string,
   controlNumber: number,
+  payerMessageId?: string,
 ): { logs: LogEntry[]; decisionAt: Date | null } {
   const logs: LogEntry[] = [];
   let t = createdAt.getTime();
@@ -150,9 +152,10 @@ function buildHistory(
   logs.push({ actor: staffName, action: "SUBMITTED_FOR_REVIEW", createdAt: step(3) });
   if (r.status === "PENDING_REVIEW") return { logs, decisionAt: null };
 
-  logs.push({ actor: reviewerName, action: "APPROVED_FOR_SUBMISSION", createdAt: step(5) });
-  // Same wording/actor as the APPROVE_AND_SEND transition in lib/workflow.ts
-  logs.push({ actor: reviewerName, action: "SUBMITTED_TO_PAYER", details: `278 request transmitted (control number ${controlNumber})`, createdAt: step(0.01) });
+  // Same wording/actor as the APPROVE_AND_SEND transition in lib/workflow.ts (+ lib/workflow-db.ts)
+  logs.push({ actor: reviewerName, action: "APPROVED_FOR_SUBMISSION", details: `278 request generated (control number ${controlNumber})`, createdAt: step(5) });
+  const sent = payerMessageId ? `control number ${controlNumber}, payer message ${payerMessageId}` : `control number ${controlNumber}`;
+  logs.push({ actor: reviewerName, action: "SUBMITTED_TO_PAYER", details: `278 request transmitted (${sent})`, createdAt: step(0.01) });
   if (r.status === "SUBMITTED") return { logs, decisionAt: null };
 
   // Rejections happen at intake validation, before clinical review
@@ -214,7 +217,10 @@ function assertConsistent(r: SeedRequest, i: number) {
 async function main() {
   REQUESTS.forEach(assertConsistent);
 
-  // Clear old data (children first)
+  // Clear old data (children first). Payer tables have no relations to hospital tables.
+  await prisma.payerMessage.deleteMany();
+  await prisma.payerMember.deleteMany();
+  await prisma.payerSettings.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.priorAuthRequest.deleteMany();
   await prisma.patient.deleteMany();
@@ -234,9 +240,26 @@ async function main() {
     { firstName: "Aisha", lastName: "Khan", dob: new Date("1991-03-30"), gender: "F", memberId: "W423456782", payerName: "Northwind Health" },
     { firstName: "Linda", lastName: "Nguyen", dob: new Date("1958-09-12"), gender: "F", memberId: "W523456783", payerName: "Summit Insurance" },
     { firstName: "Tom", lastName: "Baker", dob: new Date("1970-12-05"), gender: "M", memberId: "W623456784", payerName: "Northwind Health" },
+    // Deliberately missing from the payer roster (demo: "member not found" rejection)
+    { firstName: "Zed", lastName: "Unknown", dob: new Date("1985-04-20"), gender: "M", memberId: "W999000001", payerName: "ACME Health Plan" },
   ];
   const patients = [];
   for (const p of patientData) patients.push(await prisma.patient.create({ data: p }));
+
+  // --- Simulated payer side -------------------------------------------------
+  await prisma.payerSettings.create({ data: { id: 1, mode: "AUTO", ackDelaySeconds: 2, responseDelaySeconds: 8 } });
+  const NOT_ON_ROSTER = new Set(["W999000001"]); // Zed Unknown
+  const INACTIVE = new Set(["W623456784"]); // Tom Baker: coverage inactive
+  let memberCount = 0;
+  for (const p of patientData) {
+    if (NOT_ON_ROSTER.has(p.memberId)) continue;
+    const payer = findPayer(p.payerName);
+    if (!payer) throw new Error(`No simulated payer id for ${p.payerName}; known: ${PAYERS.map((x) => x.name).join(", ")}`);
+    await prisma.payerMember.create({
+      data: { memberId: p.memberId, payerId: payer.payerId, active: !INACTIVE.has(p.memberId) },
+    });
+    memberCount++;
+  }
 
   const providers = [
     { providerName: "Jane Smith", providerNpi: "1234567893" },
@@ -246,6 +269,7 @@ async function main() {
 
   let logCount = 0;
   let ediCount = 0;
+  let messageCount = 0;
   for (const r of REQUESTS) {
     const createdAt = daysFromNow(-r.createdDaysAgo);
     const reviewed = r.status !== "DRAFT" && r.status !== "PENDING_REVIEW";
@@ -272,20 +296,34 @@ async function main() {
     });
 
     const sentToPayer = reviewed; // reviewer approval = 278 transmitted
+    // Every request that reached the payer carries the 278 that was "sent"
+    const raw278Request = sentToPayer ? generate278Request(build278Input(request)) : null;
+
+    // Requests still waiting on the payer get a real payer message, so the
+    // running app's payer ticker picks them up and decides them.
+    let payerMessageId: string | undefined;
+    if (raw278Request && (r.status === "SUBMITTED" || r.status === "IN_REVIEW")) {
+      ({ messageId: payerMessageId } = await submitToPayer(request, raw278Request, new Date()));
+      messageCount++;
+    }
+
     const { logs, decisionAt } = buildHistory(
       r,
       createdAt,
       staff.name,
       reviewer.name,
       request.controlNumber,
+      payerMessageId,
     );
 
+    const certified = r.status === "APPROVED" || r.status === "PARTIALLY_APPROVED" || r.status === "SERVICE_COMPLETED";
     await prisma.priorAuthRequest.update({
       where: { id: request.id },
       data: {
         decisionAt,
-        // Every request that reached the payer carries the 278 that was "sent"
-        raw278Request: sentToPayer ? generate278Request(build278Input(request)) : null,
+        raw278Request,
+        // Historical seed approvals get a recognizable synthetic number
+        authorizationNumber: certified ? `AUTHS${String(request.controlNumber).padStart(7, "0")}` : null,
         auditLogs: { create: logs },
       },
     });
@@ -294,7 +332,8 @@ async function main() {
   }
 
   console.log(
-    `Seeded 2 users, ${patients.length} patients, ${REQUESTS.length} requests (${ediCount} with a generated 278), ${logCount} audit log entries.`,
+    `Seeded 2 users, ${patients.length} patients, ${REQUESTS.length} requests (${ediCount} with a generated 278), ${logCount} audit log entries. ` +
+      `Payer: settings AUTO 2s/8s, ${memberCount} roster members (1 inactive, Zed Unknown not on roster), ${messageCount} queued messages.`,
   );
 }
 

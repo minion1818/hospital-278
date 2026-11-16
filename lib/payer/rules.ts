@@ -13,6 +13,9 @@
 import { PAYERS, PROCEDURES, findProcedure } from "@/lib/catalog";
 import type { Parsed278 } from "@/lib/x12/parse278";
 import { REJECT_REASON_CODES, type RejectReasonCode } from "@/lib/x12/reject-reasons";
+// The payer's Decision is passed straight into generate278Response (lib/payer/inbox.ts),
+// so tsc checks it stays compatible with the response's ResponseDecision type.
+import type { RejectionLoop } from "@/lib/x12/generate278Response";
 
 export { REJECT_REASON_CODES, type RejectReasonCode };
 
@@ -81,7 +84,7 @@ export type RosterEntry = { active: boolean };
 export type Roster = Readonly<Record<string, RosterEntry>>;
 
 /** Where a rejection belongs in the 278 response, which decides which loop gets the AAA segment. */
-export type RejectionLoop = "payer" | "requester" | "subscriber" | "event" | "service";
+export type { RejectionLoop };
 
 export type Rejection = {
   /** X12 AAA03 reject reason code (see REJECT_REASON_CODES) */

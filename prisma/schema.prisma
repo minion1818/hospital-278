@@ -67,6 +67,7 @@ model PriorAuthRequest {
   raw278Response             String?
   decisionReason             String? // payer's reason for denial, pend, rejection, or partial approval
   decisionAt                 DateTime?
+  authorizationNumber        String? // payer's authorization number (approved / partially approved)
   createdById                String
   reviewedById               String?
   createdAt                  DateTime      @default(now())
@@ -82,4 +83,58 @@ model AuditLog {
   action    String
   details   String?
   createdAt DateTime         @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Simulated payer ("mock payer") tables. Only lib/payer/* reads or writes these;
+// the hospital side never touches them (see README, "How the hospital and the
+// simulated payer talk"). Nothing here references hospital tables.
+// ---------------------------------------------------------------------------
+
+enum PayerMessageStatus {
+  RECEIVED
+  IN_REVIEW
+  RESPONDED
+}
+
+enum PayerMode {
+  AUTO
+  MANUAL
+}
+
+/// Payer's eligibility roster (synthetic)
+model PayerMember {
+  id       String  @id @default(cuid())
+  memberId String  @unique
+  payerId  String
+  active   Boolean @default(true)
+}
+
+/// One inbound 278 request and the payer's handling of it
+model PayerMessage {
+  id                  String             @id @default(cuid())
+  /// Payer-side counter: response ISA13/GS06/ST02 and the authorization number
+  controlNumber       Int                @unique @default(autoincrement())
+  status              PayerMessageStatus @default(RECEIVED)
+  requestEdi          String
+  /// Simulated X12 275 attachment flags sent alongside the 278
+  attachments         Json
+  receivedAt          DateTime           @default(now())
+  acknowledgeAt       DateTime
+  respondAt           DateTime
+  responseEdi         String?
+  outcome             String?
+  respondedAt         DateTime?
+  deliveredAt         DateTime?
+  authorizationNumber String?
+
+  @@index([status])
+}
+
+/// Single row (id = 1)
+model PayerSettings {
+  id                   Int       @id @default(1)
+  mode                 PayerMode @default(AUTO)
+  ackDelaySeconds      Int       @default(2)
+  responseDelaySeconds Int       @default(8)
 }

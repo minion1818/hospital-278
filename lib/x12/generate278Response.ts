@@ -12,7 +12,6 @@
 //   rejected -> AAA*N**<reason code>*C in the loop where the problem is,
 //              plus the explanation in MSG
 
-import type { Decision, RejectionLoop } from "@/lib/payer/rules";
 import {
   buildInterchange,
   ccyymmdd,
@@ -22,6 +21,20 @@ import {
   segment as seg,
 } from "@/lib/x12/envelope";
 import type { Parsed278 } from "@/lib/x12/parse278";
+
+/** Response loop that carries an AAA rejection. */
+export type RejectionLoop = "payer" | "requester" | "subscriber" | "event" | "service";
+
+/**
+ * The decision to encode. Defined here (structurally) so lib/x12 stays neutral
+ * and depends on neither side; the payer's evaluateRequest output matches it.
+ */
+export type ResponseDecision =
+  | { kind: "REJECTED"; errors: { code: string; text: string; loop: RejectionLoop }[] }
+  | { kind: "PENDED"; reason: string }
+  | { kind: "DENIED"; reason: string }
+  | { kind: "PARTIAL"; unitsApproved: number; reason: string }
+  | { kind: "APPROVED"; unitsApproved: number };
 
 /** HCR01 action codes used by this generator. */
 export const HCR_ACTION_CODES = {
@@ -37,7 +50,7 @@ const MSG_MAX = 264;
 export type Generate278ResponseInput = {
   /** The parsed 278 request being answered */
   request: Parsed278;
-  decision: Decision;
+  decision: ResponseDecision;
   /** HCR02 review identification number; required for APPROVED and PARTIAL */
   authorizationNumber?: string;
   /** Response ISA13/GS06/ST02 */

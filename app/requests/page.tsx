@@ -3,6 +3,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import type { RequestStatus } from "@/lib/generated/prisma/enums";
 import { StatusBadge } from "@/components/status-badge";
+import { PayerTicker } from "@/components/payer-ticker";
 import { buttonVariants } from "@/components/ui/button";
 import {
   Table,
@@ -52,6 +53,10 @@ async function RequestsTable({
 
   return (
     <>
+      {/* Polls the simulated payer while any request shown is waiting on it */}
+      <PayerTicker
+        active={requests.some((r) => r.status === "SUBMITTED" || r.status === "IN_REVIEW")}
+      />
       <nav aria-label="Filter requests" className="mt-4 mb-4 flex flex-wrap gap-2">
         {(Object.keys(VIEWS) as ViewKey[]).map((key) => {
           const active = key === view;

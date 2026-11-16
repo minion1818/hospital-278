@@ -47,5 +47,15 @@ export async function runTransition(
   revalidatePath("/requests");
   revalidatePath(`/requests/${requestId}`);
 
-  return result.ok ? { ok: true, attempt } : { ok: false, error: result.error, attempt };
+  if (!result.ok) return { ok: false, error: result.error, attempt };
+  if (result.transmission && !result.transmission.ok) {
+    // Approved and stored, but the payer didn't receive it. The status stays
+    // SUBMITTED and the timeline shows "Transmission failed".
+    return {
+      ok: true,
+      error: `Approved, but transmission to the payer failed: ${result.transmission.error}`,
+      attempt,
+    };
+  }
+  return { ok: true, attempt };
 }

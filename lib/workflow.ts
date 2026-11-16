@@ -40,6 +40,15 @@ export type AuditEntry = {
  */
 export type TransitionEffect = "GENERATE_278" | "RESET_FOR_RESUBMISSION";
 
+/**
+ * Step run AFTER the transaction commits (it talks to the payer, which must not
+ * be inside the hospital's DB transaction):
+ * - TRANSMIT_TO_PAYER: send the stored 278 to the payer and log
+ *   "Submitted to payer" (with the payer message id) or "Transmission to payer
+ *   failed". On failure the status stays SUBMITTED so staff can see it.
+ */
+export type AfterCommitStep = "TRANSMIT_TO_PAYER";
+
 /** Plain audit entry after details are resolved. */
 export type ResolvedAuditEntry = { action: string; details?: string };
 
@@ -57,6 +66,7 @@ export type Transition = {
   /** Audit entries written in order when the transition is applied */
   audit: readonly AuditEntry[];
   effect?: TransitionEffect;
+  afterCommit?: AfterCommitStep;
 };
 
 export const TRANSITIONS: Record<TransitionKey, Transition> = {
@@ -93,11 +103,13 @@ export const TRANSITIONS: Record<TransitionKey, Transition> = {
     to: "SUBMITTED",
     noteRequired: false,
     effect: "GENERATE_278",
+    // "Submitted to payer" / "Transmission to payer failed" is logged by the
+    // after-commit step, once the payer message id (or the error) is known.
+    afterCommit: "TRANSMIT_TO_PAYER",
     audit: [
-      { action: "APPROVED_FOR_SUBMISSION" },
       {
-        action: "SUBMITTED_TO_PAYER",
-        details: (ctx) => `278 request transmitted (control number ${ctx.controlNumber})`,
+        action: "APPROVED_FOR_SUBMISSION",
+        details: (ctx) => `278 request generated (control number ${ctx.controlNumber})`,
       },
     ],
   },
