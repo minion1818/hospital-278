@@ -34,10 +34,10 @@ export async function runTransition(
   }
   const { requestId, action, note } = parsed.data;
 
-  // Demo stand-in for real authentication: the role comes from a cookie
+  // Stand-in for real authentication: the role comes from a cookie
   const actor = await getActingUser();
   if (!actor) {
-    return { ok: false, error: "Demo users not found. Run `npx prisma db seed`.", attempt };
+    return { ok: false, error: "No user accounts are set up yet. Seed the database, then try again.", attempt };
   }
 
   // Role, current-status and note checks all happen inside the transaction

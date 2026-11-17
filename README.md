@@ -1,39 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AuthDesk
 
-## Getting Started
+A prior authorization workspace for hospital authorization staff and utilization
+reviewers, built around the X12 278 (005010X217) request and response.
 
-First, run the development server:
+> **Demonstration environment.** All patient, provider and payer data is synthetic. The
+> insurance company is simulated. The same disclosure appears in the app under
+> **User menu → About AuthDesk**.
+
+Staff create requests and submit them for review; reviewers approve and send them to the
+payer as a 278; the payer's 278 response updates the request (approved, partially
+approved, denied, pended or rejected). A separate **Payer simulator** (`/payer`) plays
+the insurance company.
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+docker compose up -d          # Postgres (restarts with Docker Desktop)
+npx prisma migrate deploy     # apply migrations
+npx prisma db seed            # synthetic patients, users and requests
+npm run dev                   # http://localhost:3000 (redirects to /requests)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Checks: `npm test` (unit tests), `npm run test:flow` (end-to-end flow against a test
+database), `npx tsc --noEmit` and `npm run lint`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Using the app
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Dashboard / Requests** (`/requests`): the work queue. Filter by *All*, *Review queue*
+  or *Needs attention*, and search by patient name or member ID.
+- **New request** (`/requests/new`): saved as a draft; nothing goes to the payer yet.
+- **Request detail**: key facts, the payer decision (with the authorization number),
+  collapsible EDI 278 request and response with Copy and Download, the actions you can
+  take, and the status timeline.
+- **User menu** (top right): switch between the two seeded users, **Sam Rivera**
+  (Authorization Specialist, role `STAFF`) and **Dana Lee** (Utilization Reviewer, role
+  `REVIEWER`). This is a stand-in for real sign-in: it sets an unsigned cookie
+  (`lib/demo-session.ts`), so it must be replaced before any real use.
+- **Payer simulator** (sidebar → Tools): the simulated insurance company, described below.
 
 ## 278 generation
 
@@ -251,20 +254,20 @@ Only `lib/integration/` touches both, and only by passing EDI strings and the
 attachments object. Shared, side-neutral code: `lib/x12/*` (EDI format), `lib/catalog.ts`
 (reference code sets and simulated payer ids) and `lib/db.ts` (the connection).
 
-## Payer console
+## Payer simulator
 
 `/payer` is the simulated insurance company's side of the demo: a separate-looking app
-(green header) for reviewing incoming 278 requests. It's a **simulation for
+(its own top bar and a teal accent) for reviewing incoming 278 requests. It's a **simulation for
 demonstration**, with no real payer policy, no authentication and synthetic data only. The
-hospital header links to it, and it links back to `/requests`.
+hospital sidebar links to it under **Tools**, and it links back to AuthDesk.
 
-**AUTO vs MANUAL** (Payer settings card):
+**AUTO vs MANUAL** (Payer settings card, shown as *Automatic* and *Manual review*):
 - **AUTO:** each request is acknowledged after the acknowledgment delay (RECEIVED → IN_REVIEW,
   the hospital shows "In review"), then the simulated rules decide it after the response
   delay.
 - **MANUAL:** requests are still acknowledged, then wait in the inbox until a person
-  decides. The hospital detail page notes "Payer is in manual mode, a decision may take
-  longer." Switching back to AUTO lets already-due requests be decided on the next tick.
+  decides. The hospital detail page notes "The payer is reviewing this request manually, so a
+  decision may take longer." Switching back to AUTO lets already-due requests be decided on the next tick.
 - Delays are 0–60 seconds and apply to requests received after saving.
 
 **The five manual decisions** (on `/payer/<message>`), sent back as a real 278 response:
@@ -272,7 +275,7 @@ hospital header links to it, and it links back to `/requests`.
 | Decision | Needs | Hospital ends up |
 |---|---|---|
 | Approve | nothing; approves the requested units | APPROVED with an authorization number |
-| Approve part | units (1 to requested − 1) and a reason | PARTIALLY_APPROVED with units and an authorization number |
+| Partially approve | units (1 to requested − 1) and a reason | PARTIALLY_APPROVED with units and an authorization number |
 | Deny | a reason | DENIED |
 | Pend | a reason (what's missing) | PENDED |
 | Reject | an AAA reject code (the same list the rules use) and a reason | REJECTED (`AAA <code>: <description> - <reason>`) |
@@ -289,16 +292,16 @@ The console never touches hospital data. Delivery still happens through
 `/api/payer/tick` while something is in flight.
 
 **Demo workflow**
-1. Open `/payer` and switch the mode to **MANUAL**. Save.
-2. In the hospital (`/requests`), act as **Reviewer** and *Approve and send* three pending
-   requests (or create new ones).
+1. Open `/payer` and switch the mode to **Manual review**. Save.
+2. In AuthDesk (`/requests`), switch user to **Dana Lee** (Utilization Reviewer) and
+   *Approve and send to payer* three pending requests (or create new ones).
 3. Back in `/payer`, they appear under **Waiting for decision**. Open one and **Approve**
    it, open the next and **Deny** it with a reason, then **Pend** the third, asking for
    documentation.
-4. Watch the hospital dashboard: each request moves from IN REVIEW to APPROVED, DENIED or
-   PENDED within a few seconds, with the reason, authorization number and the raw 278
+4. Watch the hospital work queue: each request moves from *In review (payer)* to *Approved*,
+   *Denied* or *Pended* within a few seconds, with the reason, authorization number and the raw 278
    response on its detail page.
-5. Switch back to **AUTO** to let the rules take over again.
+5. Switch back to **Automatic** to let the rules take over again.
 
 Tests: `lib/payer/__tests__/manual.test.ts` (validation, in `npm test`) and the "Payer
 console" section of `npm run test:flow` (all five decisions end to end, deciding twice,

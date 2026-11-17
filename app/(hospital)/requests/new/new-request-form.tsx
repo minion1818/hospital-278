@@ -2,6 +2,8 @@
 
 import { useActionState, useState, type ReactNode } from "react";
 import Link from "next/link";
+import { Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { DIAGNOSES, PROCEDURES, PROVIDERS, findProcedure } from "@/lib/catalog";
 import {
   EMPTY_NEW_REQUEST_VALUES,
@@ -10,7 +12,7 @@ import {
 } from "@/lib/validation/request";
 import { createDraftRequest, type NewRequestState } from "./actions";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,34 +53,44 @@ export function NewRequestForm({
   patients: PatientOption[];
   minServiceDate: string;
 }) {
-  const [state, formAction, pending] = useActionState(createDraftRequest, initialState);
+  const [state, formAction, pending] = useActionState(async (prev: NewRequestState, fd: FormData) => {
+    try {
+      return await createDraftRequest(prev, fd);
+    } catch (e) {
+      // On success the action redirects to the new request. Next signals that by
+      // throwing its redirect error, which must be rethrown for the navigation.
+      if (isRedirect(e)) toast.success("Draft saved", { description: "Review it, then submit it for review." });
+      throw e;
+    }
+  }, initialState);
 
   return (
     // The key remounts the fields after each failed submit, so their default
     // values come from what the server echoed back instead of being reset.
     <form action={formAction} key={state.attempt} noValidate>
-      <Card>
-        <CardHeader>
-          <CardTitle>Request details</CardTitle>
-        </CardHeader>
+      <Card className="overflow-visible">
         <CardContent>
           {state.message && (
             <p
               role="alert"
-              className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800"
+              className="mb-6 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800 ring-1 ring-red-600/20"
             >
               {state.message}
             </p>
           )}
           <FormFields state={state} patients={patients} minServiceDate={minServiceDate} />
         </CardContent>
-        <CardFooter className="justify-end gap-2 border-t pt-4">
-          <Link href="/requests" className={buttonVariants({ variant: "outline" })}>
-            Cancel
-          </Link>
-          <Button type="submit" disabled={pending}>
-            {pending ? "Saving…" : "Save as draft"}
-          </Button>
+        <CardFooter className="sticky bottom-0 z-10 flex-wrap justify-between gap-3 rounded-b-xl bg-card/95 backdrop-blur">
+          <p className="text-xs text-muted-foreground">Saved as a draft. Nothing is sent to the payer until a reviewer approves it.</p>
+          <div className="flex gap-2">
+            <Link href="/requests" className={buttonVariants({ variant: "outline" })}>
+              Cancel
+            </Link>
+            <Button type="submit" disabled={pending}>
+              {pending && <Loader2 aria-hidden className="animate-spin" />}
+              {pending ? "Saving…" : "Save as draft"}
+            </Button>
+          </div>
         </CardFooter>
       </Card>
     </form>
@@ -102,102 +114,120 @@ function FormFields({
   const err = (f: NewRequestField) => errors[f]?.[0];
 
   return (
-    <div className="grid gap-5 md:grid-cols-2">
-      <Field id="patientId" label="Patient" error={err("patientId")} className="md:col-span-2">
-        <SelectField
-          name="patientId"
-          items={patients}
-          values={values}
-          placeholder={patients.length ? "Select a patient" : "No patients found"}
-          invalid={!!err("patientId")}
-        />
-      </Field>
+    <div className="divide-y">
+      <Section title="Patient" description="Who the service is for. Coverage details come from the patient record.">
+        <Field id="patientId" label="Patient" error={err("patientId")} className="md:col-span-2">
+          <SelectField
+            name="patientId"
+            items={patients}
+            values={values}
+            placeholder={patients.length ? "Select a patient" : "No patients found"}
+            invalid={!!err("patientId")}
+          />
+        </Field>
+      </Section>
 
-      <Field id="providerNpi" label="Requesting provider" error={err("providerNpi")}>
-        <SelectField
-          name="providerNpi"
-          items={PROVIDER_OPTIONS}
-          values={values}
-          placeholder="Select a provider"
-          invalid={!!err("providerNpi")}
-        />
-      </Field>
+      <Section title="Provider and service" description="The ordering provider and what they are requesting.">
+        <Field id="providerNpi" label="Requesting provider" error={err("providerNpi")}>
+          <SelectField
+            name="providerNpi"
+            items={PROVIDER_OPTIONS}
+            values={values}
+            placeholder="Select a provider"
+            invalid={!!err("providerNpi")}
+          />
+        </Field>
 
-      <Field id="diagnosisCode" label="Diagnosis (ICD-10)" error={err("diagnosisCode")}>
-        <SelectField
-          name="diagnosisCode"
-          items={DIAGNOSIS_OPTIONS}
-          values={values}
-          placeholder="Select a diagnosis"
-          invalid={!!err("diagnosisCode")}
-        />
-      </Field>
+        <Field id="diagnosisCode" label="Diagnosis (ICD-10)" error={err("diagnosisCode")}>
+          <SelectField
+            name="diagnosisCode"
+            items={DIAGNOSIS_OPTIONS}
+            values={values}
+            placeholder="Select a diagnosis"
+            invalid={!!err("diagnosisCode")}
+          />
+        </Field>
 
-      <Field id="procedureCode" label="Procedure (CPT)" error={err("procedureCode")}>
-        <SelectField
-          name="procedureCode"
-          items={PROCEDURE_OPTIONS}
-          values={values}
-          placeholder="Select a procedure"
-          invalid={!!err("procedureCode")}
-          onChange={setProcedureCode}
-        />
-      </Field>
+        <Field id="procedureCode" label="Procedure (CPT)" error={err("procedureCode")}>
+          <SelectField
+            name="procedureCode"
+            items={PROCEDURE_OPTIONS}
+            values={values}
+            placeholder="Select a procedure"
+            invalid={!!err("procedureCode")}
+            onChange={setProcedureCode}
+          />
+        </Field>
 
-      <Field id="serviceDate" label="Service date" error={err("serviceDate")}>
-        <Input
-          id="serviceDate"
-          name="serviceDate"
-          type="date"
-          min={minServiceDate}
-          defaultValue={values.serviceDate}
-          aria-invalid={!!err("serviceDate") || undefined}
-          aria-describedby={err("serviceDate") ? "serviceDate-error" : undefined}
-        />
-      </Field>
+        <Field id="serviceDate" label="Service date" error={err("serviceDate")} hint="Today or later.">
+          <Input
+            id="serviceDate"
+            name="serviceDate"
+            type="date"
+            min={minServiceDate}
+            defaultValue={values.serviceDate}
+            aria-invalid={!!err("serviceDate") || undefined}
+            aria-describedby={err("serviceDate") ? "serviceDate-error" : "serviceDate-hint"}
+          />
+        </Field>
 
-      <Field
-        id="unitsRequested"
-        label="Units requested"
-        error={err("unitsRequested")}
-        hint={
-          maxUnits
-            ? `Up to ${maxUnits} unit${maxUnits === 1 ? "" : "s"} for this procedure.`
-            : "Between 1 and 99."
-        }
-      >
-        <Input
+        <Field
           id="unitsRequested"
-          name="unitsRequested"
-          type="number"
-          inputMode="numeric"
-          min={1}
-          max={maxUnits ?? 99}
-          step={1}
-          defaultValue={values.unitsRequested}
-          aria-invalid={!!err("unitsRequested") || undefined}
-          aria-describedby="unitsRequested-hint"
-        />
-      </Field>
+          label="Units requested"
+          error={err("unitsRequested")}
+          hint={
+            maxUnits
+              ? `Up to ${maxUnits} unit${maxUnits === 1 ? "" : "s"} for this procedure.`
+              : "Between 1 and 99."
+          }
+        >
+          <Input
+            id="unitsRequested"
+            name="unitsRequested"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={maxUnits ?? 99}
+            step={1}
+            defaultValue={values.unitsRequested}
+            aria-invalid={!!err("unitsRequested") || undefined}
+            aria-describedby={err("unitsRequested") ? "unitsRequested-error" : "unitsRequested-hint"}
+          />
+        </Field>
+      </Section>
 
-      <fieldset className="space-y-3 md:col-span-2">
-        <legend className="mb-1 text-sm font-medium">Supporting documentation</legend>
-        <p className="text-xs text-gray-500">
-          The simulated payer checks these when it decides. Missing clinical notes usually
-          lead to a pend; no documented conservative treatment can lead to a denial.
-        </p>
-        <CheckboxField
-          name="clinicalNotesAttached"
-          label="Clinical notes attached"
-          defaultChecked={values.clinicalNotesAttached === "true"}
-        />
-        <CheckboxField
-          name="conservativeTreatmentTried"
-          label="Conservative treatment tried (e.g. PT, medication, injections)"
-          defaultChecked={values.conservativeTreatmentTried === "true"}
-        />
-      </fieldset>
+      <Section
+        title="Clinical documentation"
+        description="Payers usually ask for clinical notes, and for evidence that conservative treatment was tried first."
+      >
+        <div className="space-y-4 md:col-span-2">
+          <CheckboxField
+            name="clinicalNotesAttached"
+            label="Clinical notes attached"
+            hint="Documentation will be sent with this request."
+            defaultChecked={values.clinicalNotesAttached === "true"}
+          />
+          <CheckboxField
+            name="conservativeTreatmentTried"
+            label="Conservative treatment tried"
+            hint="For example physical therapy, medication or injections, documented in the notes."
+            defaultChecked={values.conservativeTreatmentTried === "true"}
+          />
+        </div>
+      </Section>
     </div>
+  );
+}
+
+function Section({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return (
+    <section className="grid gap-x-8 gap-y-4 py-6 first:pt-2 last:pb-2 lg:grid-cols-3">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+      </div>
+      <div className="grid gap-5 md:grid-cols-2 lg:col-span-2">{children}</div>
+    </section>
   );
 }
 
@@ -221,12 +251,12 @@ function Field({
       <Label htmlFor={id}>{label}</Label>
       {children}
       {hint && !error && (
-        <p id={`${id}-hint`} className="text-xs text-gray-500">
+        <p id={`${id}-hint`} className="text-xs text-muted-foreground">
           {hint}
         </p>
       )}
       {error && (
-        <p id={`${id}-error`} className="text-xs text-red-700">
+        <p id={`${id}-error`} className="text-xs font-medium text-destructive">
           {error}
         </p>
       )}
@@ -278,24 +308,36 @@ function SelectField({
 function CheckboxField({
   name,
   label,
+  hint,
   defaultChecked,
 }: {
   name: NewRequestField;
   label: string;
+  hint: string;
   defaultChecked: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2.5">
+    <div className="flex items-start gap-3">
       <Checkbox
         id={name}
         name={name}
         value="true"
         uncheckedValue="false"
         defaultChecked={defaultChecked}
+        aria-describedby={`${name}-hint`}
+        className="mt-0.5"
       />
-      <Label htmlFor={name} className="font-normal">
-        {label}
-      </Label>
+      <div className="space-y-0.5">
+        <Label htmlFor={name}>{label}</Label>
+        <p id={`${name}-hint`} className="text-xs text-muted-foreground">
+          {hint}
+        </p>
+      </div>
     </div>
   );
+}
+
+/** Next signals a successful redirect() from a Server Action by throwing this error. */
+function isRedirect(e: unknown): boolean {
+  return typeof e === "object" && e !== null && "digest" in e && String((e as { digest: unknown }).digest).startsWith("NEXT_REDIRECT");
 }

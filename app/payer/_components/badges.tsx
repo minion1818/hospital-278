@@ -1,38 +1,47 @@
 // Payer-side badges. Separate from the hospital's StatusBadge on purpose:
-// payer UI never imports hospital components.
+// payer UI never imports hospital components (Pill is a generic shared primitive).
 
-const MESSAGE_STATUS: Record<string, { label: string; className: string }> = {
-  RECEIVED: { label: "Received", className: "bg-sky-100 text-sky-800" },
-  IN_REVIEW: { label: "In review", className: "bg-amber-100 text-amber-800" },
-  RESPONDED: { label: "Responded", className: "bg-emerald-100 text-emerald-800" },
+import { Bot, UserRound } from "lucide-react";
+import { Pill, type Tone } from "@/components/pill";
+
+const MESSAGE_STATUS: Record<string, { label: string; tone: Tone }> = {
+  RECEIVED: { label: "Received", tone: "blue" },
+  IN_REVIEW: { label: "In review", tone: "amber" },
+  RESPONDED: { label: "Responded", tone: "slate" },
 };
 
-const OUTCOME: Record<string, { label: string; className: string }> = {
-  APPROVED: { label: "Approved", className: "bg-green-100 text-green-800" },
-  PARTIALLY_APPROVED: { label: "Approved in part", className: "bg-lime-100 text-lime-800" },
-  DENIED: { label: "Denied", className: "bg-red-100 text-red-800" },
-  PENDED: { label: "Pended", className: "bg-orange-100 text-orange-800" },
-  REJECTED: { label: "Rejected", className: "bg-rose-200 text-rose-900" },
+const OUTCOME: Record<string, { label: string; tone: Tone }> = {
+  APPROVED: { label: "Approved", tone: "green" },
+  PARTIALLY_APPROVED: { label: "Partially approved", tone: "teal" },
+  DENIED: { label: "Denied", tone: "red" },
+  PENDED: { label: "Pended", tone: "orange" },
+  REJECTED: { label: "Rejected", tone: "rose" },
 };
 
-const pill = "inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium";
+const humanize = (v: string) => {
+  const w = v.toLowerCase().replaceAll("_", " ");
+  return w.charAt(0).toUpperCase() + w.slice(1);
+};
 
 export function MessageStatusBadge({ status }: { status: string }) {
-  const s = MESSAGE_STATUS[status] ?? { label: status, className: "bg-gray-100 text-gray-700" };
-  return <span className={`${pill} ${s.className}`}>{s.label}</span>;
+  const s = MESSAGE_STATUS[status] ?? { label: humanize(status), tone: "neutral" as Tone };
+  return <Pill tone={s.tone}>{s.label}</Pill>;
 }
 
 export function OutcomeBadge({ outcome }: { outcome: string | null }) {
-  if (!outcome) return <span className="text-gray-400">—</span>;
-  const o = OUTCOME[outcome] ?? { label: outcome, className: "bg-gray-100 text-gray-700" };
-  return <span className={`${pill} ${o.className}`}>{o.label}</span>;
+  if (!outcome) return <span className="text-muted-foreground">—</span>;
+  const o = OUTCOME[outcome] ?? { label: humanize(outcome), tone: "neutral" as Tone };
+  return <Pill tone={o.tone}>{o.label}</Pill>;
 }
 
 export function DecidedByBadge({ decidedBy }: { decidedBy: string | null }) {
   if (!decidedBy) return null;
+  const manual = decidedBy === "MANUAL";
+  const Icon = manual ? UserRound : Bot;
   return (
-    <span className="inline-block rounded border border-emerald-300 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800">
-      {decidedBy === "MANUAL" ? "Decided manually" : "Decided by rules"}
+    <span className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+      <Icon aria-hidden className="size-3.5" />
+      {manual ? "Decided by a reviewer" : "Decided by rules"}
     </span>
   );
 }

@@ -1,28 +1,27 @@
 import { Suspense } from "react";
-import Link from "next/link";
+import type { Metadata } from "next";
 import { db } from "@/lib/db";
 import { todayIsoDate } from "@/lib/validation/request";
+import { PageContainer, PageHeader } from "@/components/page-header";
+import { FormSkeleton } from "@/components/skeletons";
 import { NewRequestForm, type PatientOption } from "./new-request-form";
+
+export const metadata: Metadata = { title: "New request" };
 
 export default function NewRequestPage() {
   return (
-    <main className="mx-auto w-full max-w-6xl p-8">
-      <Link
-        href="/requests"
-        className="mb-6 inline-block text-sm text-blue-700 hover:underline"
-      >
-        ← Back to requests
-      </Link>
-      <h1 className="mb-1 text-2xl font-semibold">New prior authorization request</h1>
-      <p className="mb-6 text-sm text-gray-500">
-        Saved as a draft. Nothing is sent to the payer yet.
-      </p>
-      <div className="max-w-3xl">
-        <Suspense fallback={<p className="text-sm text-gray-500">Loading form…</p>}>
+    <PageContainer>
+      <PageHeader
+        breadcrumbs={[{ label: "Requests", href: "/requests" }, { label: "New request" }]}
+        title="New prior authorization request"
+        subtitle="Capture the request details. A reviewer checks it before it is sent to the payer."
+      />
+      <div className="max-w-5xl">
+        <Suspense fallback={<FormSkeleton />}>
           <NewRequestFormLoader />
         </Suspense>
       </div>
-    </main>
+    </PageContainer>
   );
 }
 
@@ -32,7 +31,7 @@ async function NewRequestFormLoader() {
   });
   const options: PatientOption[] = patients.map((p) => ({
     value: p.id,
-    label: `${p.lastName}, ${p.firstName} (${p.memberId}, ${p.payerName})`,
+    label: `${p.lastName}, ${p.firstName} · ${p.memberId} · ${p.payerName}`,
   }));
 
   // Computed at request time (after the DB read), never in the prerendered shell

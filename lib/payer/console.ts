@@ -168,15 +168,15 @@ export async function suggestDecision(
 export function describeDecision(d: Decision): string {
   switch (d.kind) {
     case "APPROVED":
-      return `APPROVE ${d.unitsApproved} unit${d.unitsApproved === 1 ? "" : "s"}`;
+      return `Approve ${d.unitsApproved} unit${d.unitsApproved === 1 ? "" : "s"}`;
     case "PARTIAL":
-      return `APPROVE PART (${d.unitsApproved} units) - ${d.reason}`;
+      return `Partially approve (${d.unitsApproved} units): ${d.reason}`;
     case "DENIED":
-      return `DENY - ${d.reason}`;
+      return `Deny: ${d.reason}`;
     case "PENDED":
-      return `PEND - ${d.reason}`;
+      return `Pend: ${d.reason}`;
     case "REJECTED":
-      return `REJECT - ${d.errors.map((e) => `AAA ${e.code}: ${e.text}`).join("; ")}`;
+      return `Reject: ${d.errors.map((e) => `AAA ${e.code}: ${e.text}`).join("; ")}`;
   }
 }
 

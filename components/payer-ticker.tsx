@@ -17,7 +17,7 @@ type TickResponse = {
 };
 
 /**
- * Demo stand-in for a background worker: while the page shows work in flight,
+ * Stand-in for a background worker: while the page shows work in flight,
  * POST /api/payer/tick every few seconds and refresh the page when something
  * changed. Stops when the watched count reaches zero (or after ~2 quiet minutes).
  *
@@ -28,7 +28,7 @@ type TickResponse = {
 export function PayerTicker({
   active,
   watch = "requests",
-  label = "Payer is processing…",
+  label = "Waiting for the payer…",
 }: {
   active: boolean;
   /** Which count ends polling: hospital requests or payer messages */
@@ -92,11 +92,11 @@ export function PayerTicker({
     <div
       role="status"
       aria-live="polite"
-      className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] z-50 flex items-center gap-2 rounded-full border bg-white/95 px-3 py-1.5 text-xs text-gray-600 shadow-sm"
+      className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom,0px))] z-40 flex items-center gap-2 rounded-full border bg-card/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
     >
       <span className="relative flex size-2">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-indigo-400 opacity-75" />
-        <span className="relative inline-flex size-2 rounded-full bg-indigo-500" />
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60 opacity-75" />
+        <span className="relative inline-flex size-2 rounded-full bg-primary" />
       </span>
       {label}
     </div>

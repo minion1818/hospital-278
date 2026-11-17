@@ -149,6 +149,12 @@ export const ROLE_LABELS: Record<Role, string> = {
   REVIEWER: "Reviewer",
 };
 
+/** Job titles shown in the user menu (display only; the enum values stay STAFF / REVIEWER). */
+export const ROLE_TITLES: Record<Role, string> = {
+  STAFF: "Authorization Specialist",
+  REVIEWER: "Utilization Reviewer",
+};
+
 /** Transitions the given role may apply to a request in the given status. */
 export function availableTransitions(status: RequestStatus, role: Role): Transition[] {
   return Object.values(TRANSITIONS).filter(
@@ -174,7 +180,7 @@ export function checkTransition(
   if (!t.roles.includes(role)) {
     return {
       ok: false,
-      error: `Only ${t.roles.map((r) => ROLE_LABELS[r]).join(" or ")} can "${t.label.toLowerCase()}". Switch roles to continue.`,
+      error: `Only ${t.roles.map((r) => ROLE_LABELS[r]).join(" or ")} can "${t.label.toLowerCase()}". Switch user to continue.`,
     };
   }
   if (!t.from.includes(currentStatus)) {

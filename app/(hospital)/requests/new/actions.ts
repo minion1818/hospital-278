@@ -60,7 +60,7 @@ export async function createDraftRequest(
   // created by the seeded staff user.
   const staff = await db.user.findUnique({ where: { email: "staff@demo.test" } });
   if (!staff) {
-    return fail({}, "Demo staff user not found. Run `npx prisma db seed` and try again.");
+    return fail({}, "No staff user account is set up yet. Seed the database, then try again.");
   }
 
   const created = await db.$transaction(async (tx) => {

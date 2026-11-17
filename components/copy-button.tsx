@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /** Copies `text` to the clipboard and briefly confirms (or reports failure). */
-export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+export function CopyButton({ text, label = "Copy", ariaLabel }: { text: string; label?: string; ariaLabel?: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
@@ -18,6 +19,7 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
       type="button"
       variant="outline"
       size="sm"
+      aria-label={ariaLabel}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
@@ -28,9 +30,8 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
         }
       }}
     >
-      <span aria-live="polite">
-        {status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : label}
-      </span>
+      {status === "copied" ? <Check aria-hidden /> : <Copy aria-hidden />}
+      <span aria-live="polite">{status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : label}</span>
     </Button>
   );
 }

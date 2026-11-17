@@ -5,8 +5,8 @@ import { z } from "zod";
 import { ManualDecisionError, decideManually } from "@/lib/payer/console";
 import { settingsSchema, updateSettings } from "@/lib/payer/inbox";
 
-// SIMULATED PAYER console actions. No authentication: this is a demo stand-in
-// for an insurer's internal review tool.
+// SIMULATED PAYER console actions. No authentication: a stand-in for an
+// insurer's internal review tool.
 
 export type SettingsState = {
   ok: boolean;
@@ -37,7 +37,7 @@ export async function saveSettings(prev: SettingsState, formData: FormData): Pro
   }
   await updateSettings(parsed.data);
   revalidatePath("/payer");
-  return { ok: true, message: `Saved. Payer is now in ${parsed.data.mode} mode.`, errors: {}, attempt };
+  return { ok: true, message: parsed.data.mode === "AUTO" ? "Requests are now decided automatically." : "Requests now wait for manual review.", errors: {}, attempt };
 }
 
 export type DecideState = {

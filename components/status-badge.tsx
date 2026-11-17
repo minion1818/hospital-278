@@ -1,29 +1,35 @@
 import type { RequestStatus } from "@/lib/generated/prisma/enums";
+import { Pill, type Tone } from "@/components/pill";
 
-// Record<RequestStatus, ...> makes tsc fail if a status is added to the enum without a style
-const STATUS_STYLES: Record<RequestStatus, string> = {
-  DRAFT: "bg-gray-100 text-gray-700",
-  PENDING_REVIEW: "bg-yellow-100 text-yellow-800",
-  SUBMITTED: "bg-blue-100 text-blue-800",
-  IN_REVIEW: "bg-indigo-100 text-indigo-800",
-  APPROVED: "bg-green-100 text-green-800",
-  PARTIALLY_APPROVED: "bg-lime-100 text-lime-800",
-  DENIED: "bg-red-100 text-red-800",
-  PENDED: "bg-orange-100 text-orange-800",
-  REJECTED: "bg-rose-200 text-rose-900",
-  SERVICE_COMPLETED: "bg-teal-100 text-teal-800",
+// Record<RequestStatus, ...> makes tsc fail if a status is added to the enum without a label and style
+const STATUS_META: Record<RequestStatus, { label: string; tone: Tone }> = {
+  DRAFT: { label: "Draft", tone: "neutral" },
+  PENDING_REVIEW: { label: "Pending review", tone: "amber" },
+  SUBMITTED: { label: "Submitted", tone: "blue" },
+  IN_REVIEW: { label: "In review (payer)", tone: "indigo" },
+  APPROVED: { label: "Approved", tone: "green" },
+  PARTIALLY_APPROVED: { label: "Partially approved", tone: "teal" },
+  DENIED: { label: "Denied", tone: "red" },
+  PENDED: { label: "Pended (more information needed)", tone: "orange" },
+  REJECTED: { label: "Rejected (needs correction)", tone: "rose" },
+  SERVICE_COMPLETED: { label: "Service completed", tone: "slate" },
 };
 
-export function formatStatus(status: string) {
-  return status.replaceAll("_", " ");
+/** Short labels for tight spaces (tables, filter chips). */
+const SHORT_LABELS: Partial<Record<RequestStatus, string>> = {
+  PENDED: "Pended",
+  REJECTED: "Rejected",
+};
+
+export function statusLabel(status: RequestStatus, short = false): string {
+  return (short && SHORT_LABELS[status]) || STATUS_META[status].label;
 }
 
-export function StatusBadge({ status }: { status: RequestStatus }) {
+export function StatusBadge({ status, short = false }: { status: RequestStatus; short?: boolean }) {
+  const meta = STATUS_META[status];
   return (
-    <span
-      className={`inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[status]}`}
-    >
-      {formatStatus(status)}
-    </span>
+    <Pill tone={meta.tone}>
+      <span title={short ? meta.label : undefined}>{statusLabel(status, short)}</span>
+    </Pill>
   );
 }

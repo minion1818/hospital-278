@@ -31,3 +31,17 @@ export async function getActingUser() {
   const user = await db.user.findUnique({ where: { email: DEMO_USER_EMAIL[role] } });
   return user ? { id: user.id, name: user.name, role } : null;
 }
+
+export type SessionUser = { role: Role; name: string };
+
+/** The current role plus the seeded users that can be switched to (for the user menu). */
+export async function getSessionUsers(): Promise<{ current: Role; users: SessionUser[] }> {
+  const current = await getActingRole();
+  const rows = await db.user.findMany({
+    where: { email: { in: Object.values(DEMO_USER_EMAIL) } },
+    select: { name: true, role: true },
+  });
+  const order: Role[] = ["STAFF", "REVIEWER"];
+  const users = order.flatMap((role) => rows.filter((u) => u.role === role).map((u) => ({ role, name: u.name })));
+  return { current, users };
+}

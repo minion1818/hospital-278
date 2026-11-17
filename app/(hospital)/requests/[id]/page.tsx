@@ -1,25 +1,26 @@
 import { Suspense, type ReactNode } from "react";
-import Link from "next/link";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { StatusBadge } from "@/components/status-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Pill, type Tone } from "@/components/pill";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getActingRole } from "@/lib/demo-session";
 import type { RequestStatus } from "@/lib/generated/prisma/enums";
-import { ROLE_LABELS, availableTransitions, waitingMessage } from "@/lib/workflow";
+import { availableTransitions, waitingMessage } from "@/lib/workflow";
 import { ActionsPanel, type TransitionOption } from "./actions-panel";
-import { CopyButton } from "@/components/copy-button";
 import { PayerTicker } from "@/components/payer-ticker";
 import { getPayerMode } from "@/lib/integration/tick";
-import { buttonVariants } from "@/components/ui/button";
 import { formatEdi } from "@/lib/x12/format";
+import { findDiagnosis, findProcedure } from "@/lib/catalog";
+import { formatDate, timeZoneLabel } from "@/lib/format";
+import { DateTime } from "@/components/date-time";
+import { EdiPanel } from "@/components/edi-panel";
+import { KeyFacts, PageContainer, PageHeader } from "@/components/page-header";
+import { DetailSkeleton } from "@/components/skeletons";
+import { cn } from "@/lib/utils";
 
-// Date-only values are stored at UTC midnight, so format them in UTC
-const formatDate = (d: Date) =>
-  d.toLocaleDateString("en-US", { dateStyle: "medium", timeZone: "UTC" });
-
-const formatDateTime = (d: Date) =>
-  d.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+export const metadata: Metadata = { title: "Request details" };
 
 const DECIDED_STATUSES = new Set<RequestStatus>([
   "APPROVED",
@@ -32,38 +33,46 @@ const DECIDED_STATUSES = new Set<RequestStatus>([
 
 const yesNo = (b: boolean) => (b ? "Yes" : "No");
 
-/** SUBMITTED_FOR_REVIEW -> "Submitted for review" */
-function humanizeAction(action: string) {
+// Timeline wording for audit actions (display only; stored values are unchanged)
+const ACTION_LABELS: Record<string, { label: string; tone: Tone }> = {
+  CREATED: { label: "Draft created", tone: "neutral" },
+  SUBMITTED_FOR_REVIEW: { label: "Submitted for review", tone: "amber" },
+  SENT_BACK_TO_STAFF: { label: "Sent back to staff", tone: "orange" },
+  APPROVED_FOR_SUBMISSION: { label: "Approved for submission", tone: "blue" },
+  SUBMITTED_TO_PAYER: { label: "Sent to payer", tone: "blue" },
+  TRANSMISSION_FAILED: { label: "Transmission to payer failed", tone: "red" },
+  PAYER_IN_REVIEW: { label: "Payer review started", tone: "indigo" },
+  PAYER_APPROVED: { label: "Approved by payer", tone: "green" },
+  PAYER_PARTIALLY_APPROVED: { label: "Partially approved by payer", tone: "teal" },
+  PAYER_DENIED: { label: "Denied by payer", tone: "red" },
+  PAYER_PENDED: { label: "Pended by payer (more information needed)", tone: "orange" },
+  PAYER_REJECTED: { label: "Rejected by payer (needs correction)", tone: "rose" },
+  PAYER_RESPONSE_INVALID: { label: "Payer response could not be read", tone: "red" },
+  REOPENED_AS_DRAFT: { label: "Reopened as draft", tone: "neutral" },
+  SERVICE_COMPLETED: { label: "Service completed", tone: "slate" },
+};
+
+function actionLabel(action: string) {
+  if (ACTION_LABELS[action]) return ACTION_LABELS[action];
   const words = action.toLowerCase().replaceAll("_", " ");
-  return words.charAt(0).toUpperCase() + words.slice(1);
+  return { label: words.charAt(0).toUpperCase() + words.slice(1), tone: "neutral" as Tone };
 }
 
+/** Stored actor/details text, tidied for display (no internal message ids). */
+const displayActor = (actor: string) => actor.replace(/\s*\(simulated\)$/i, "");
+const displayDetails = (details: string) => details.replace(/,?\s*payer message [a-z0-9]+/gi, "");
 
-export default function RequestDetailPage({
-  params,
-}: PageProps<"/requests/[id]">) {
+export default function RequestDetailPage({ params }: PageProps<"/requests/[id]">) {
   return (
-    <main className="mx-auto w-full max-w-6xl p-8">
-      <Link
-        href="/requests"
-        className="mb-6 inline-block text-sm text-blue-700 hover:underline"
-      >
-        ← Back to requests
-      </Link>
-      <Suspense
-        fallback={<p className="text-sm text-gray-500">Loading request…</p>}
-      >
+    <PageContainer>
+      <Suspense fallback={<DetailSkeleton label="Loading request" />}>
         <RequestDetail params={params} />
       </Suspense>
-    </main>
+    </PageContainer>
   );
 }
 
-async function RequestDetail({
-  params,
-}: {
-  params: PageProps<"/requests/[id]">["params"];
-}) {
+async function RequestDetail({ params }: { params: PageProps<"/requests/[id]">["params"] }) {
   const { id } = await params;
   const request = await db.priorAuthRequest.findUnique({
     where: { id },
@@ -76,239 +85,263 @@ async function RequestDetail({
   if (!request) notFound();
 
   const { patient } = request;
+  const patientName = `${patient.firstName} ${patient.lastName}`;
+  const procedure = findProcedure(request.procedureCode);
+  const diagnosis = findDiagnosis(request.diagnosisCode);
   const showDecision = request.decisionAt != null || request.decisionReason != null;
   // A reopened request keeps the payer's earlier decision so staff can see what to fix
   const decisionIsCurrent = DECIDED_STATUSES.has(request.status);
 
-  // Demo stand-in for real auth: the role comes from a cookie (read inside Suspense)
+  // Stand-in for real auth: the role comes from a cookie (read inside Suspense)
   const role = await getActingRole();
 
   // Hint only: read through lib/integration, never from payer internals
   const waitingOnPayer = request.status === "SUBMITTED" || request.status === "IN_REVIEW";
   const payerManual = waitingOnPayer && (await getPayerMode()) === "MANUAL";
-  const transitions: TransitionOption[] = availableTransitions(request.status, role).map(
-    (t) => ({
-      key: t.key,
-      label: t.label,
-      description: t.description,
-      noteRequired: t.noteRequired,
-      notePrompt: t.notePrompt,
-    }),
-  );
+  const transitions: TransitionOption[] = availableTransitions(request.status, role).map((t) => ({
+    key: t.key,
+    label: t.label,
+    description: t.description,
+    noteRequired: t.noteRequired,
+    notePrompt: t.notePrompt,
+  }));
 
   return (
     <>
-      <header className="mb-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold">
-            {patient.firstName} {patient.lastName}
-          </h1>
-          <StatusBadge status={request.status} />
-        </div>
-        <p className="mt-1 text-sm text-gray-500">
-          {patient.payerName} · Member ID {patient.memberId}
-        </p>
-      </header>
+      <PayerTicker key={request.status} active={waitingOnPayer} label="Waiting for the payer…" />
 
-      <PayerTicker key={request.status} active={waitingOnPayer} />
+      <PageHeader
+        breadcrumbs={[{ label: "Requests", href: "/requests" }, { label: patientName }]}
+        title={patientName}
+        badge={<StatusBadge status={request.status} />}
+      >
+        <KeyFacts
+          items={[
+            { label: "Payer", value: patient.payerName },
+            { label: "Member ID", value: <span className="font-mono">{patient.memberId}</span> },
+            {
+              label: "Procedure",
+              value: (
+                <>
+                  {procedure?.label ?? "Procedure"}{" "}
+                  <span className="font-mono text-muted-foreground">({request.procedureCode})</span>
+                </>
+              ),
+            },
+            { label: "Service date", value: formatDate(request.serviceDate) },
+          ]}
+        />
+      </PageHeader>
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Actions</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-3 text-xs text-gray-500">
-            Acting as {ROLE_LABELS[role]} (switch in the header).
-          </p>
-          {transitions.length > 0 ? (
-            // Keyed by status: a successful transition remounts the panel fresh
-            <ActionsPanel key={request.status} requestId={request.id} transitions={transitions} />
-          ) : (
-            <>
-              <p className="text-sm text-gray-700">{waitingMessage(request.status, role)}</p>
-              {payerManual && (
-                <p className="mt-1 text-xs text-gray-500">
-                  Payer is in manual mode, a decision may take longer.
-                </p>
-              )}
-            </>
+      <div className="grid items-start gap-6 lg:grid-cols-3">
+        <div className="space-y-6 lg:col-span-2">
+          {showDecision && (
+            <DecisionCard
+              current={decisionIsCurrent}
+              status={request.status}
+              reason={request.decisionReason}
+              decisionAt={request.decisionAt}
+              unitsApproved={request.unitsApproved}
+              unitsRequested={request.unitsRequested}
+              authorizationNumber={request.authorizationNumber}
+            />
           )}
-        </CardContent>
-      </Card>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Request details</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2">
-              <Field label="Provider">
-                {request.providerName}{" "}
-                <span className="text-gray-500">(NPI {request.providerNpi})</span>
-              </Field>
-              <Field label="Diagnosis code">{request.diagnosisCode}</Field>
-              <Field label="Procedure code">{request.procedureCode}</Field>
-              <Field label="Service date">{formatDate(request.serviceDate)}</Field>
-              <Field label="Units requested">{request.unitsRequested}</Field>
-              <Field label="Units approved">{request.unitsApproved ?? "—"}</Field>
-              <Field label="Clinical notes attached">
-                {yesNo(request.clinicalNotesAttached)}
-              </Field>
-              <Field label="Conservative treatment tried">
-                {yesNo(request.conservativeTreatmentTried)}
-              </Field>
-            </dl>
-          </CardContent>
-        </Card>
-
-        {showDecision && (
           <Card>
             <CardHeader>
-              <CardTitle>{decisionIsCurrent ? "Payer decision" : "Previous payer decision"}</CardTitle>
+              <CardTitle>Request details</CardTitle>
             </CardHeader>
             <CardContent>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2">
-                <Field label="Reason">{request.decisionReason ?? "—"}</Field>
-                <Field label="Decision date">
-                  {request.decisionAt ? formatDateTime(request.decisionAt) : "—"}
+              <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+                <Field label="Patient">
+                  {patientName}
+                  <Sub>Born {formatDate(patient.dob)}</Sub>
                 </Field>
-                {request.status === "PARTIALLY_APPROVED" && (
-                  <Field label="Units approved">
-                    {request.unitsApproved ?? 0} of {request.unitsRequested}
-                  </Field>
-                )}
-                {request.authorizationNumber && (
-                  <Field label="Authorization number">
-                    <span className="font-mono">{request.authorizationNumber}</span>
-                  </Field>
-                )}
+                <Field label="Requesting provider">
+                  {request.providerName}
+                  <Sub>NPI {request.providerNpi}</Sub>
+                </Field>
+                <Field label="Diagnosis (ICD-10)">
+                  {diagnosis?.label ?? "Diagnosis"}
+                  <Sub mono>{request.diagnosisCode}</Sub>
+                </Field>
+                <Field label="Procedure (CPT)">
+                  {procedure?.label ?? "Procedure"}
+                  <Sub mono>{request.procedureCode}</Sub>
+                </Field>
+                <Field label="Service date">{formatDate(request.serviceDate)}</Field>
+                <Field label="Units">
+                  {request.unitsRequested} requested
+                  {request.unitsApproved != null && <Sub>{request.unitsApproved} approved</Sub>}
+                </Field>
+                <Field label="Clinical notes attached">{yesNo(request.clinicalNotesAttached)}</Field>
+                <Field label="Conservative treatment tried">{yesNo(request.conservativeTreatmentTried)}</Field>
               </dl>
             </CardContent>
           </Card>
-        )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle>EDI 278</CardTitle>
+              <CardDescription>X12 005010X217 transactions exchanged with the payer.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <EdiPanel
+                title="278 request"
+                description="Sent to payer"
+                text={request.raw278Request ? formatEdi(request.raw278Request) : null}
+                downloadHref={`/requests/${request.id}/278`}
+                emptyText="No 278 request has been sent yet. It is generated when a reviewer approves and sends the request."
+              />
+              <EdiPanel
+                title="278 response"
+                description="Received from payer"
+                text={request.raw278Response ? formatEdi(request.raw278Response) : null}
+                downloadHref={`/requests/${request.id}/278/response`}
+                emptyText="No response from the payer yet."
+              />
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Actions</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {transitions.length > 0 ? (
+                // Keyed by status: a successful transition remounts the panel fresh
+                <ActionsPanel key={request.status} requestId={request.id} transitions={transitions} />
+              ) : (
+                <div className="space-y-1">
+                  <p className="text-sm text-foreground">{waitingMessage(request.status, role)}</p>
+                  {payerManual && (
+                    <p className="text-xs text-muted-foreground">
+                      The payer is reviewing this request manually, so a decision may take longer.
+                    </p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Status timeline</CardTitle>
+              <CardDescription>Times in {timeZoneLabel(request.createdAt)}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {request.auditLogs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No activity recorded yet.</p>
+              ) : (
+                <ol className="space-y-0">
+                  {[...request.auditLogs].reverse().map((log, i) => {
+                    const latest = i === 0;
+                    const { label, tone } = actionLabel(log.action);
+                    return (
+                      <li key={log.id} className="group relative flex gap-3 pb-4 last:pb-0">
+                        {/* connector line */}
+                        <span aria-hidden className="absolute top-4 bottom-0 left-[5px] w-px bg-border group-last:hidden" />
+                        <span
+                          aria-hidden
+                          className={cn(
+                            "relative mt-1.5 size-[11px] shrink-0 rounded-full ring-2 ring-card",
+                            latest ? "bg-primary" : "bg-muted-foreground/40",
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          {latest ? (
+                            <Pill tone={tone} className="mb-0.5">
+                              {label}
+                            </Pill>
+                          ) : (
+                            <p className="text-sm font-medium text-foreground">{label}</p>
+                          )}
+                          <p className="text-xs text-muted-foreground">
+                            {displayActor(log.actor)} · <DateTime value={log.createdAt} />
+                          </p>
+                          {log.details && (
+                            <p className="mt-0.5 text-xs break-words text-muted-foreground">
+                              {displayDetails(log.details)}
+                            </p>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
-
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>Status timeline</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {request.auditLogs.length === 0 ? (
-            <p className="text-sm text-gray-500">No events recorded.</p>
-          ) : (
-            <ol className="relative ml-2 border-l border-gray-200">
-              {request.auditLogs.map((log, i) => {
-                const latest = i === request.auditLogs.length - 1;
-                return (
-                  <li key={log.id} className="relative pb-5 pl-6 last:pb-0">
-                    <span
-                      aria-hidden
-                      className={`absolute top-1 -left-[7px] size-3 rounded-full ring-4 ring-white ${
-                        latest ? "bg-blue-600" : "bg-gray-300"
-                      }`}
-                    />
-                    <p
-                      className={
-                        latest ? "font-semibold text-gray-900" : "font-medium text-gray-700"
-                      }
-                    >
-                      {humanizeAction(log.action)}
-                      {latest && (
-                        <span className="ml-2 rounded bg-blue-50 px-1.5 py-0.5 text-xs font-medium text-blue-700">
-                          Latest
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      {log.actor} · {formatDateTime(log.createdAt)}
-                    </p>
-                    {log.details && (
-                      <p className="mt-1 text-sm text-gray-600">{log.details}</p>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>EDI 278</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <EdiSection
-            title="Request"
-            raw={request.raw278Request}
-            actions={
-              request.raw278Request && (
-                <EdiActions raw={request.raw278Request} href={`/requests/${request.id}/278`} />
-              )
-            }
-          />
-          <EdiSection
-            title="Response"
-            raw={request.raw278Response}
-            actions={
-              request.raw278Response && (
-                <EdiActions
-                  raw={request.raw278Response}
-                  href={`/requests/${request.id}/278/response`}
-                />
-              )
-            }
-          />
-        </CardContent>
-      </Card>
     </>
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <>
-      <dt className="text-gray-500">{label}</dt>
-      <dd className="text-gray-900">{children}</dd>
-    </>
-  );
-}
-
-function EdiActions({ raw, href }: { raw: string; href: string }) {
-  return (
-    <>
-      <CopyButton text={formatEdi(raw)} />
-      {/* Plain <a>: a route handler download, not a page navigation */}
-      <a href={href} download className={buttonVariants({ variant: "outline", size: "sm" })}>
-        Download .edi
-      </a>
-    </>
-  );
-}
-
-function EdiSection({
-  title,
-  raw,
-  actions,
+function DecisionCard({
+  current,
+  status,
+  reason,
+  decisionAt,
+  unitsApproved,
+  unitsRequested,
+  authorizationNumber,
 }: {
-  title: string;
-  raw: string | null;
-  actions?: ReactNode;
+  current: boolean;
+  status: RequestStatus;
+  reason: string | null;
+  decisionAt: Date | null;
+  unitsApproved: number | null;
+  unitsRequested: number;
+  authorizationNumber: string | null;
 }) {
   return (
-    <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-gray-700">{title}</h3>
-        {actions && <div className="flex gap-2">{actions}</div>}
-      </div>
-      {raw ? (
-        <pre className="overflow-x-auto rounded-md bg-gray-50 p-3 font-mono text-xs leading-relaxed text-gray-800 ring-1 ring-gray-200">
-          {formatEdi(raw)}
-        </pre>
-      ) : (
-        <p className="text-sm text-gray-500">Not generated yet</p>
-      )}
-    </section>
+    <Card>
+      <CardHeader>
+        <CardTitle>{current ? "Payer decision" : "Previous payer decision"}</CardTitle>
+        {!current && (
+          <CardDescription>Kept for reference while the request is corrected and resubmitted.</CardDescription>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {authorizationNumber && (
+          <div className="rounded-lg bg-green-50 px-4 py-3 ring-1 ring-green-600/20">
+            <p className="text-xs font-medium tracking-wide text-green-800 uppercase">Authorization number</p>
+            <p className="mt-0.5 font-mono text-xl font-semibold tracking-wide text-green-950">{authorizationNumber}</p>
+          </div>
+        )}
+        <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+          {current && (
+            <Field label="Decision">
+              <StatusBadge status={status} />
+            </Field>
+          )}
+          <Field label="Decision date">{decisionAt ? <DateTime value={decisionAt} /> : "Not recorded"}</Field>
+          {unitsApproved != null && (
+            <Field label="Units approved">
+              {unitsApproved} of {unitsRequested}
+            </Field>
+          )}
+          <Field label="Reason" className="sm:col-span-2">
+            {reason ?? <span className="text-muted-foreground">No reason given</span>}
+          </Field>
+        </dl>
+      </CardContent>
+    </Card>
   );
+}
+
+function Field({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
+  return (
+    <div className={className}>
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-sm text-foreground">{children}</dd>
+    </div>
+  );
+}
+
+function Sub({ children, mono = false }: { children: ReactNode; mono?: boolean }) {
+  return <span className={cn("block text-xs text-muted-foreground", mono && "font-mono")}>{children}</span>;
 }
