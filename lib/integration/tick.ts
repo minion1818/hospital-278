@@ -6,7 +6,14 @@
 // to move time forward on the payer side and carry responses back.
 
 import { applyPayerResponse, markInReview } from "@/lib/hospital/applyPayerResponse";
-import { markDelivered, processDue, receive278 } from "@/lib/payer/inbox";
+import { db } from "@/lib/db";
+import {
+  countOpenMessages,
+  getSettings,
+  markDelivered,
+  processDue,
+  receive278,
+} from "@/lib/payer/inbox";
 import type { Attachments } from "@/lib/payer/rules";
 import { parse278 } from "@/lib/x12/parse278";
 
@@ -70,4 +77,18 @@ export async function submitToPayer(
     conservativeTreatmentDocumented: request.conservativeTreatmentTried,
   };
   return receive278(ediText, attachments, now);
+}
+
+/** Work still in flight on each side (drives the pollers on both UIs). */
+export async function getPendingCounts(): Promise<{ requests: number; payerOpen: number }> {
+  const [requests, payerOpen] = await Promise.all([
+    db.priorAuthRequest.count({ where: { status: { in: ["SUBMITTED", "IN_REVIEW"] } } }),
+    countOpenMessages(),
+  ]);
+  return { requests, payerOpen };
+}
+
+/** The payer's current mode, for hospital-side hints ("manual mode, may take longer"). */
+export async function getPayerMode(): Promise<"AUTO" | "MANUAL"> {
+  return (await getSettings()).mode;
 }

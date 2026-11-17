@@ -127,6 +127,8 @@ model PayerMessage {
   respondedAt         DateTime?
   deliveredAt         DateTime?
   authorizationNumber String?
+  /// "AUTO" (rules after the timer) or "MANUAL" (decided in the payer console)
+  decidedBy           String?
 
   @@index([status])
 }

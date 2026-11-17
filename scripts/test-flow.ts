@@ -59,6 +59,9 @@ async function main() {
   const { applyPayerResponse } = await import("@/lib/hospital/applyPayerResponse");
   const { receive278 } = await import("@/lib/payer/inbox");
   const { parse278Response } = await import("@/lib/x12/parse278Response");
+  const { parse278 } = await import("@/lib/x12/parse278");
+  const { decideManually, suggestDecision, ManualDecisionError } = await import("@/lib/payer/console");
+  const { evaluateRequest, payerRequestFromParsed } = await import("@/lib/payer/rules");
 
   try {
     // ---------------- fixtures (test database only) ----------------
@@ -171,6 +174,8 @@ async function main() {
       );
     }
     const sent = await db.auditLog.findFirst({ where: { requestId: ids[0], action: "SUBMITTED_TO_PAYER" } });
+    const autoMessages = await db.payerMessage.findMany({ where: { status: "RESPONDED" }, select: { decidedBy: true } });
+    check("AUTO decisions are marked decidedBy AUTO", autoMessages.length === 6 && autoMessages.every((m) => m.decidedBy === "AUTO"), autoMessages);
     check("'Submitted to payer' mentions the payer message id", /payer message c[a-z0-9]+\)/.test(sent?.details ?? ""), sent?.details);
 
     // ---------------- idempotency ----------------
@@ -220,6 +225,233 @@ async function main() {
       failEntry?.details === "Transmission to payer failed: Payer endpoint unreachable (simulated)" && !failTrail.includes("SUBMITTED_TO_PAYER"),
       { failTrail, details: failEntry?.details });
     check("no payer message was created", (await db.payerMessage.count({ where: { requestEdi: { contains: failing.id } } })) === 0);
+
+    // ---------------- payer console: manual decisions ----------------
+    console.log("\nPayer console: five manual decisions (MANUAL mode)");
+    await db.payerSettings.update({ where: { id: 1 }, data: { mode: "MANUAL" } });
+
+    /** Approve as reviewer at second T, let the payer acknowledge, return the payer message id. */
+    const sendAndAcknowledge = async (data: Parameters<typeof createPending>[0], T: number) => {
+      const req = await createPending(data);
+      const res = await applyTransition(db, { requestId: req.id, key: "APPROVE_AND_SEND", actor: reviewer, now: at(T) });
+      if (!res.ok || !res.transmission?.ok) throw new Error(`send failed: ${JSON.stringify(res)}`);
+      await tick(at(T + 2));
+      return { requestId: req.id, messageId: res.transmission.messageId };
+    };
+    const messageRow = (id: string) => db.payerMessage.findUniqueOrThrow({ where: { id } });
+    const expectManualError = async (label: string, fn: () => Promise<unknown>, pattern: RegExp) => {
+      try {
+        await fn();
+        check(label, false, "no error thrown");
+      } catch (e) {
+        check(
+          label,
+          e instanceof ManualDecisionError && pattern.test(JSON.stringify({ m: e.message, f: e.fieldErrors })),
+          e instanceof Error ? e.message : e,
+        );
+      }
+    };
+
+    const manualCases = [
+      {
+        name: "manual APPROVE",
+        data: { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true },
+        input: { kind: "APPROVED" },
+        status: "APPROVED",
+        reason: null,
+        units: 1,
+        auth: true,
+      },
+      {
+        name: "manual APPROVE PART",
+        data: { patientId: john.id, procedureCode: "97110", diagnosisCode: "M54.50", units: 12, notes: true },
+        input: { kind: "PARTIAL", unitsApproved: "8", reason: "Approved 8 visits for now, send progress notes for more" },
+        status: "PARTIALLY_APPROVED",
+        reason: "Approved 8 visits for now, send progress notes for more",
+        units: 8,
+        auth: true,
+      },
+      {
+        name: "manual DENY",
+        data: { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true },
+        input: { kind: "DENIED", reason: "Imaging not indicated per reviewer" },
+        status: "DENIED",
+        reason: "Imaging not indicated per reviewer",
+        units: null,
+        auth: false,
+      },
+      {
+        name: "manual PEND",
+        data: { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true },
+        input: { kind: "PENDED", reason: "Send the most recent X-ray report" },
+        status: "PENDED",
+        reason: "Send the most recent X-ray report",
+        units: null,
+        auth: false,
+      },
+      {
+        name: "manual REJECT (code 72)",
+        data: { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true },
+        input: { kind: "REJECTED", code: "72", reason: "Member ID format does not match our cards" },
+        status: "REJECTED",
+        reason: "AAA 72: Invalid/missing subscriber/insured ID - Member ID format does not match our cards",
+        units: null,
+        auth: false,
+      },
+    ] as const;
+
+    let T = 1000;
+    for (const c of manualCases) {
+      const { requestId, messageId } = await sendAndAcknowledge(c.data, T);
+      check(`${c.name}: waiting IN_REVIEW in MANUAL mode`, (await status(requestId)) === "IN_REVIEW");
+      await decideManually(messageId, c.input, at(T + 3));
+      const tickResult = await tick(at(T + 4));
+      const req = await db.priorAuthRequest.findUniqueOrThrow({ where: { id: requestId } });
+      const msg = await messageRow(messageId);
+      check(`${c.name}: delivered by tick -> hospital ${c.status}`, tickResult.responded === 1 && req.status === c.status, {
+        tickResult,
+        status: req.status,
+      });
+      check(`${c.name}: reason`, req.decisionReason === c.reason, req.decisionReason);
+      check(`${c.name}: units approved ${c.units}`, req.unitsApproved === c.units, req.unitsApproved);
+      check(
+        `${c.name}: authorization number ${c.auth ? "set and matches payer" : "empty"}`,
+        c.auth
+          ? /^AUTH\d{8}$/.test(req.authorizationNumber ?? "") && req.authorizationNumber === msg.authorizationNumber
+          : req.authorizationNumber === null,
+        { hospital: req.authorizationNumber, payer: msg.authorizationNumber },
+      );
+      check(
+        `${c.name}: payer message RESPONDED, decidedBy MANUAL, delivered`,
+        msg.status === "RESPONDED" && msg.decidedBy === "MANUAL" && msg.deliveredAt !== null,
+        msg,
+      );
+      check(`${c.name}: stored response parses cleanly`, parse278Response(req.raw278Response!).errors.length === 0);
+      T += 100;
+    }
+
+    console.log("\nPayer console: deciding twice");
+    {
+      const { messageId } = await sendAndAcknowledge(
+        { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true },
+        T,
+      );
+      await decideManually(messageId, { kind: "APPROVED" }, at(T + 3));
+      const before = JSON.stringify(await messageRow(messageId));
+      await expectManualError(
+        "second decision gives the friendly 'already responded' error",
+        () => decideManually(messageId, { kind: "DENIED", reason: "changed my mind" }, at(T + 5)),
+        /already been responded/,
+      );
+      check("second decision changed nothing", JSON.stringify(await messageRow(messageId)) === before);
+      await tick(at(T + 6));
+      T += 100;
+    }
+
+    console.log("\nPayer console: validation (message must stay untouched)");
+    {
+      const { requestId, messageId } = await sendAndAcknowledge(
+        { patientId: john.id, procedureCode: "97110", diagnosisCode: "M54.50", units: 12, notes: true },
+        T,
+      );
+      const before = JSON.stringify(await messageRow(messageId));
+      await expectManualError("empty reason rejected", () => decideManually(messageId, { kind: "DENIED", reason: "  " }, at(T + 3)), /Enter a reason/);
+      await expectManualError(
+        "reason over 200 characters rejected",
+        () => decideManually(messageId, { kind: "PENDED", reason: "x".repeat(201) }, at(T + 3)),
+        /under 200/,
+      );
+      await expectManualError(
+        "partial with 0 units rejected",
+        () => decideManually(messageId, { kind: "PARTIAL", unitsApproved: 0, reason: "r" }, at(T + 3)),
+        /between 1 and 11/,
+      );
+      await expectManualError(
+        "partial equal to requested (12) rejected",
+        () => decideManually(messageId, { kind: "PARTIAL", unitsApproved: 12, reason: "r" }, at(T + 3)),
+        /between 1 and 11/,
+      );
+      await expectManualError(
+        "partial above requested (13) rejected",
+        () => decideManually(messageId, { kind: "PARTIAL", unitsApproved: 13, reason: "r" }, at(T + 3)),
+        /between 1 and 11/,
+      );
+      check("after all rejected attempts: message unchanged (still IN_REVIEW)", JSON.stringify(await messageRow(messageId)) === before);
+
+      await decideManually(messageId, { kind: "DENIED", reason: "Needs *signed* order~then resubmit" }, at(T + 4));
+      await tick(at(T + 5));
+      const req = await db.priorAuthRequest.findUniqueOrThrow({ where: { id: requestId } });
+      check(
+        "reason with '*' and '~' is sanitized, not breaking the file",
+        req.status === "DENIED" &&
+          req.decisionReason === "Needs signed order then resubmit" &&
+          parse278Response(req.raw278Response!).errors.length === 0,
+        req.decisionReason,
+      );
+      T += 100;
+    }
+
+    console.log("\nPayer console: manual override in AUTO mode beats the timer");
+    {
+      await db.payerSettings.update({ where: { id: 1 }, data: { mode: "AUTO" } });
+      // The AUTO rules would APPROVE this one
+      const req = await createPending({ patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true });
+      const res = await applyTransition(db, { requestId: req.id, key: "APPROVE_AND_SEND", actor: reviewer, now: at(T) });
+      const messageId = res.ok && res.transmission?.ok ? res.transmission.messageId : "";
+      await decideManually(messageId, { kind: "DENIED", reason: "Manual override before the timer" }, at(T + 1)); // still RECEIVED
+      const r = await tick(at(T + 20)); // well past both timers
+      const final = await db.priorAuthRequest.findUniqueOrThrow({ where: { id: req.id } });
+      const msg = await messageRow(messageId);
+      const trail = await actions(req.id);
+      check(
+        "manual decision (before ack) wins: hospital DENIED with the manual reason",
+        r.responded === 1 && final.status === "DENIED" && final.decisionReason === "Manual override before the timer",
+        { r, status: final.status, reason: final.decisionReason },
+      );
+      check(
+        "payer message decidedBy MANUAL, never acknowledged by the timer",
+        msg.decidedBy === "MANUAL" && !trail.includes("PAYER_IN_REVIEW"),
+        { decidedBy: msg.decidedBy, trail },
+      );
+      T += 100;
+    }
+
+    console.log("\nPayer console: suggestDecision matches evaluateRequest and stores nothing");
+    {
+      await db.payerSettings.update({ where: { id: 1 }, data: { mode: "MANUAL" } });
+      const suggestionCases = [
+        ["would approve", { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true }],
+        ["would pend (no notes)", { patientId: john.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: false }],
+        ["would reject (Zed)", { patientId: zed.id, procedureCode: "73721", diagnosisCode: "M17.11", notes: true }],
+      ] as const;
+      for (const [label, data] of suggestionCases) {
+        const { messageId } = await sendAndAcknowledge(data, T);
+        const before = JSON.stringify(await messageRow(messageId));
+        const countBefore = await db.payerMessage.count();
+        const msg = await messageRow(messageId);
+        const suggestion = await suggestDecision(msg, at(T + 3));
+        const pr = payerRequestFromParsed(parse278(msg.requestEdi));
+        const member = await db.payerMember.findUnique({ where: { memberId: pr.memberId! } });
+        const expected = evaluateRequest({
+          request: pr,
+          attachments: msg.attachments as { clinicalNotesAttached: boolean; conservativeTreatmentDocumented: boolean },
+          roster: member && member.payerId === pr.payerId ? { [member.memberId]: { active: member.active } } : {},
+          today: at(T + 3).toISOString().slice(0, 10).replaceAll("-", ""),
+        });
+        check(`suggestDecision ${label}: equals evaluateRequest (${suggestion.kind})`, JSON.stringify(suggestion) === JSON.stringify(expected), {
+          suggestion,
+          expected,
+        });
+        check(
+          `suggestDecision ${label}: stored nothing`,
+          JSON.stringify(await messageRow(messageId)) === before && (await db.payerMessage.count()) === countBefore,
+        );
+        await decideManually(messageId, { kind: "APPROVED" }, at(T + 4)); // tidy up
+        await tick(at(T + 5));
+        T += 100;
+      }
+      await db.payerSettings.update({ where: { id: 1 }, data: { mode: "AUTO" } });
+    }
 
     // ---------------- garbage in ----------------
     console.log("\nPayer intake validation");

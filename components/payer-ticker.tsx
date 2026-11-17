@@ -7,14 +7,34 @@ const INTERVAL_MS = 3000;
 /** Stop after this many quiet ticks (~2 min) so a stuck request can't poll forever. */
 const MAX_IDLE_TICKS = 40;
 
-type TickResponse = { acknowledged: number; responded: number; pending: number };
+type TickResponse = {
+  acknowledged: number;
+  responded: number;
+  /** Hospital requests waiting on the payer */
+  pending: number;
+  /** Payer messages not yet responded to or not yet delivered */
+  payerOpen: number;
+};
 
 /**
- * Demo stand-in for a background worker: while the page shows a request that
- * is waiting on the payer, POST /api/payer/tick every few seconds and refresh
- * the page when something changed. Stops when nothing is pending.
+ * Demo stand-in for a background worker: while the page shows work in flight,
+ * POST /api/payer/tick every few seconds and refresh the page when something
+ * changed. Stops when the watched count reaches zero (or after ~2 quiet minutes).
+ *
+ * Shared by both sides: it imports no hospital or payer code, only the tick URL.
+ * Callers should pass a `key` that changes when their work changes, so a ticker
+ * that went idle restarts after, e.g., a manual decision.
  */
-export function PayerTicker({ active }: { active: boolean }) {
+export function PayerTicker({
+  active,
+  watch = "requests",
+  label = "Payer is processing…",
+}: {
+  active: boolean;
+  /** Which count ends polling: hospital requests or payer messages */
+  watch?: "requests" | "payer";
+  label?: string;
+}) {
   const router = useRouter();
   const [running, setRunning] = useState(active);
 
@@ -48,7 +68,7 @@ export function PayerTicker({ active }: { active: boolean }) {
         } else if (++idle >= MAX_IDLE_TICKS) {
           setRunning(false);
         }
-        if (data.pending === 0) {
+        if ((watch === "payer" ? data.payerOpen : data.pending) === 0) {
           router.refresh(); // pick up anything another tab applied
           setRunning(false);
         }
@@ -65,7 +85,7 @@ export function PayerTicker({ active }: { active: boolean }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [running, router]);
+  }, [running, router, watch]);
 
   if (!running) return null;
   return (
@@ -78,7 +98,7 @@ export function PayerTicker({ active }: { active: boolean }) {
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-indigo-400 opacity-75" />
         <span className="relative inline-flex size-2 rounded-full bg-indigo-500" />
       </span>
-      Payer is processing…
+      {label}
     </div>
   );
 }

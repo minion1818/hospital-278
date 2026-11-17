@@ -44,6 +44,8 @@ async function RequestsTable({
     db.priorAuthRequest.groupBy({ by: ["status"], _count: { _all: true } }),
   ]);
 
+  const waiting = requests.filter((r) => r.status === "SUBMITTED" || r.status === "IN_REVIEW");
+
   const countFor = (v: ViewKey) => {
     const s = VIEWS[v].statuses as readonly RequestStatus[] | null;
     return counts
@@ -55,7 +57,8 @@ async function RequestsTable({
     <>
       {/* Polls the simulated payer while any request shown is waiting on it */}
       <PayerTicker
-        active={requests.some((r) => r.status === "SUBMITTED" || r.status === "IN_REVIEW")}
+        key={waiting.map((r) => `${r.id}:${r.status}`).join(",")}
+        active={waiting.length > 0}
       />
       <nav aria-label="Filter requests" className="mt-4 mb-4 flex flex-wrap gap-2">
         {(Object.keys(VIEWS) as ViewKey[]).map((key) => {

@@ -31,14 +31,14 @@ export type ProcessDueResult = {
   failures: { messageId: string; error: string }[];
 };
 
-const attachmentsSchema = z.object({
+export const attachmentsSchema = z.object({
   clinicalNotesAttached: z.boolean(),
   conservativeTreatmentDocumented: z.boolean(),
 });
 
 const addSeconds = (d: Date, s: number) => new Date(d.getTime() + s * 1000);
 
-const OUTCOME: Record<Decision["kind"], PayerOutcome> = {
+export const OUTCOME: Record<Decision["kind"], PayerOutcome> = {
   APPROVED: "APPROVED",
   PARTIAL: "PARTIALLY_APPROVED",
   DENIED: "DENIED",
@@ -50,9 +50,52 @@ const OUTCOME: Record<Decision["kind"], PayerOutcome> = {
 export const authorizationNumberFor = (controlNumber: number) =>
   `AUTH${String(controlNumber).padStart(8, "0")}`;
 
-/** The single settings row, created with defaults if missing. */
+/** Matches the column defaults in prisma/schema.prisma (PayerSettings). */
+const DEFAULT_SETTINGS = { id: 1, mode: "AUTO", ackDelaySeconds: 2, responseDelaySeconds: 8 } as const;
+
+/**
+ * The single settings row, or the defaults if it hasn't been saved yet.
+ * Read-only on purpose: pages call this while rendering, and a write (upsert)
+ * there both mutates during a GET and trips Cache Components' prerender check
+ * (Prisma's upsert transaction calls crypto.randomUUID() synchronously).
+ */
 export async function getPayerSettings() {
-  return db.payerSettings.upsert({ where: { id: 1 }, create: { id: 1 }, update: {} });
+  return (await db.payerSettings.findUnique({ where: { id: 1 } })) ?? { ...DEFAULT_SETTINGS };
+}
+
+/** Alias used by the payer console. */
+export const getSettings = getPayerSettings;
+
+export const settingsSchema = z.object({
+  mode: z.enum(["AUTO", "MANUAL"], { error: "Choose AUTO or MANUAL." }),
+  ackDelaySeconds: z.coerce
+    .number({ error: "Enter a number of seconds." })
+    .int({ error: "Use whole seconds." })
+    .min(0, { error: "Use 0 to 60 seconds." })
+    .max(60, { error: "Use 0 to 60 seconds." }),
+  responseDelaySeconds: z.coerce
+    .number({ error: "Enter a number of seconds." })
+    .int({ error: "Use whole seconds." })
+    .min(0, { error: "Use 0 to 60 seconds." })
+    .max(60, { error: "Use 0 to 60 seconds." }),
+});
+
+export type SettingsInput = z.input<typeof settingsSchema>;
+
+/**
+ * Validates and saves settings. New delays apply to messages received from now
+ * on; switching to AUTO lets already-due IN_REVIEW messages be decided on the next tick.
+ */
+export async function updateSettings(input: SettingsInput) {
+  const data = settingsSchema.parse(input);
+  return db.payerSettings.upsert({ where: { id: 1 }, create: { id: 1, ...data }, update: data });
+}
+
+/** Messages still needing payer work or delivery (drives the console's polling). */
+export async function countOpenMessages() {
+  return db.payerMessage.count({
+    where: { OR: [{ status: { not: "RESPONDED" } }, { deliveredAt: null }] },
+  });
 }
 
 /**
@@ -157,35 +200,63 @@ async function decideMessage(id: string, now: Date) {
     if (claimed.count !== 1) return; // someone else decided it
 
     const message = await tx.payerMessage.findUniqueOrThrow({ where: { id } });
-    const request = parse278(message.requestEdi);
-    const payerRequest = payerRequestFromParsed(request);
-
-    const decision = evaluateRequest({
-      request: payerRequest,
-      attachments: attachmentsSchema.parse(message.attachments),
-      roster: await rosterFor(tx, payerRequest.payerId, payerRequest.memberId),
-      today: ccyymmdd(now),
-    });
-
-    const certified = decision.kind === "APPROVED" || decision.kind === "PARTIAL";
-    const authorizationNumber = certified ? authorizationNumberFor(message.controlNumber) : undefined;
-    const responseEdi = generate278Response({
-      request,
-      decision,
-      authorizationNumber,
-      controlNumber: message.controlNumber,
-      respondedAt: now,
-    });
-
-    await tx.payerMessage.update({
-      where: { id },
-      data: { responseEdi, outcome: OUTCOME[decision.kind], authorizationNumber: authorizationNumber ?? null },
-    });
+    const decision = await rulesDecision(tx, message, now);
+    await storeResponse(tx, message, decision, now, "AUTO");
   });
 }
 
+/** What the AUTO rules decide for a message. Reads the roster; writes nothing. */
+export async function rulesDecision(
+  client: Prisma.TransactionClient,
+  message: { requestEdi: string; attachments: Prisma.JsonValue },
+  now: Date,
+): Promise<Decision> {
+  const payerRequest = payerRequestFromParsed(parse278(message.requestEdi));
+  return evaluateRequest({
+    request: payerRequest,
+    attachments: attachmentsSchema.parse(message.attachments),
+    roster: await rosterFor(client, payerRequest.payerId, payerRequest.memberId),
+    today: ccyymmdd(now),
+  });
+}
+
+/**
+ * Builds the 278 response for a decision and stores it on an already-claimed
+ * message (status RESPONDED). Shared by AUTO decisions and the payer console.
+ */
+export async function storeResponse(
+  tx: Prisma.TransactionClient,
+  message: { id: string; requestEdi: string; controlNumber: number },
+  decision: Decision,
+  now: Date,
+  decidedBy: "AUTO" | "MANUAL",
+) {
+  const certified = decision.kind === "APPROVED" || decision.kind === "PARTIAL";
+  const authorizationNumber = certified ? authorizationNumberFor(message.controlNumber) : undefined;
+  const responseEdi = generate278Response({
+    request: parse278(message.requestEdi),
+    decision,
+    authorizationNumber,
+    controlNumber: message.controlNumber,
+    respondedAt: now,
+  });
+
+  await tx.payerMessage.update({
+    where: { id: message.id },
+    data: {
+      status: "RESPONDED",
+      respondedAt: now,
+      responseEdi,
+      outcome: OUTCOME[decision.kind],
+      authorizationNumber: authorizationNumber ?? null,
+      decidedBy,
+    },
+  });
+  return { outcome: OUTCOME[decision.kind], authorizationNumber };
+}
+
 /** Roster for evaluateRequest: the one member asked about, if this payer has them. */
-async function rosterFor(
+export async function rosterFor(
   tx: Prisma.TransactionClient,
   payerId: string | undefined,
   memberId: string | undefined,

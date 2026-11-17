@@ -15,10 +15,18 @@ export function SiteHeader() {
           Prior Auth Dashboard
           <span className="ml-2 text-xs font-normal text-gray-500">synthetic demo</span>
         </Link>
-        {/* The cookie read is request-time data, so it streams in behind Suspense */}
-        <Suspense fallback={<RoleSwitcherShell />}>
-          <RoleSwitcher />
-        </Suspense>
+        <div className="flex flex-wrap items-center gap-4">
+          <Link
+            href="/payer"
+            className="text-xs font-medium text-emerald-700 hover:underline"
+          >
+            Payer console (simulated) →
+          </Link>
+          {/* The cookie read is request-time data, so it streams in behind Suspense */}
+          <Suspense fallback={<RoleSwitcherShell />}>
+            <RoleSwitcher />
+          </Suspense>
+        </div>
       </div>
     </header>
   );

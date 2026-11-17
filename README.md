@@ -250,3 +250,57 @@ imports hospital modules and never reads or writes `PriorAuthRequest`, `Patient`
 Only `lib/integration/` touches both, and only by passing EDI strings and the
 attachments object. Shared, side-neutral code: `lib/x12/*` (EDI format), `lib/catalog.ts`
 (reference code sets and simulated payer ids) and `lib/db.ts` (the connection).
+
+## Payer console
+
+`/payer` is the simulated insurance company's side of the demo: a separate-looking app
+(green header) for reviewing incoming 278 requests. It's a **simulation for
+demonstration**, with no real payer policy, no authentication and synthetic data only. The
+hospital header links to it, and it links back to `/requests`.
+
+**AUTO vs MANUAL** (Payer settings card):
+- **AUTO:** each request is acknowledged after the acknowledgment delay (RECEIVED → IN_REVIEW,
+  the hospital shows "In review"), then the simulated rules decide it after the response
+  delay.
+- **MANUAL:** requests are still acknowledged, then wait in the inbox until a person
+  decides. The hospital detail page notes "Payer is in manual mode, a decision may take
+  longer." Switching back to AUTO lets already-due requests be decided on the next tick.
+- Delays are 0–60 seconds and apply to requests received after saving.
+
+**The five manual decisions** (on `/payer/<message>`), sent back as a real 278 response:
+
+| Decision | Needs | Hospital ends up |
+|---|---|---|
+| Approve | nothing; approves the requested units | APPROVED with an authorization number |
+| Approve part | units (1 to requested − 1) and a reason | PARTIALLY_APPROVED with units and an authorization number |
+| Deny | a reason | DENIED |
+| Pend | a reason (what's missing) | PENDED |
+| Reject | an AAA reject code (the same list the rules use) and a reason | REJECTED (`AAA <code>: <description> - <reason>`) |
+
+Reasons are required for everything except Approve, are limited to 200 characters, and
+lose X12 delimiter characters (`* : ~ ^`) when the response is generated. A manual decision
+also works in AUTO mode, overriding the timer if it hasn't fired yet (even before the
+acknowledgment). Deciding a message twice is refused with "already been responded to."
+Each message shows a **Rules check** hint (what the AUTO rules would do) and whether it
+was **decided manually or by rules**.
+
+The console never touches hospital data. Delivery still happens through
+`lib/integration/tick.ts`: both the hospital pages and the payer console poll
+`/api/payer/tick` while something is in flight.
+
+**Demo workflow**
+1. Open `/payer` and switch the mode to **MANUAL**. Save.
+2. In the hospital (`/requests`), act as **Reviewer** and *Approve and send* three pending
+   requests (or create new ones).
+3. Back in `/payer`, they appear under **Waiting for decision**. Open one and **Approve**
+   it, open the next and **Deny** it with a reason, then **Pend** the third, asking for
+   documentation.
+4. Watch the hospital dashboard: each request moves from IN REVIEW to APPROVED, DENIED or
+   PENDED within a few seconds, with the reason, authorization number and the raw 278
+   response on its detail page.
+5. Switch back to **AUTO** to let the rules take over again.
+
+Tests: `lib/payer/__tests__/manual.test.ts` (validation, in `npm test`) and the "Payer
+console" section of `npm run test:flow` (all five decisions end to end, deciding twice,
+reason and unit validation, MANUAL hold and AUTO release, manual override of the AUTO
+timer, and `suggestDecision` storing nothing).

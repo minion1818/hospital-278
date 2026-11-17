@@ -1,18 +1,15 @@
-import { db } from "@/lib/db";
-import { tick } from "@/lib/integration/tick";
+import { getPendingCounts, tick } from "@/lib/integration/tick";
 
 // DEMO STAND-IN FOR A BACKGROUND WORKER.
 // In a real system the payer's processing and the delivery of its 278 response
 // would run on their own (a queue worker, cron, or the payer calling a webhook).
-// Here the browser pokes this endpoint while a request is waiting on the payer.
+// Here the browser pokes this endpoint while something is waiting.
 //
 // POST handlers always run at request time (only GET handlers can be
 // prerendered under Cache Components), so no route config is needed.
 export async function POST() {
   const result = await tick(new Date());
-  const pending = await db.priorAuthRequest.count({
-    where: { status: { in: ["SUBMITTED", "IN_REVIEW"] } },
-  });
+  const { requests, payerOpen } = await getPendingCounts();
 
   if (result.errors.length > 0) console.error("[payer tick]", result.errors);
 
@@ -20,7 +17,10 @@ export async function POST() {
     {
       acknowledged: result.acknowledged,
       responded: result.responded,
-      pending,
+      /** Hospital requests in SUBMITTED or IN_REVIEW */
+      pending: requests,
+      /** Payer messages not yet responded to, or responded but not delivered */
+      payerOpen,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

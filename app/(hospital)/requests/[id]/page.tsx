@@ -10,8 +10,9 @@ import { ROLE_LABELS, availableTransitions, waitingMessage } from "@/lib/workflo
 import { ActionsPanel, type TransitionOption } from "./actions-panel";
 import { CopyButton } from "@/components/copy-button";
 import { PayerTicker } from "@/components/payer-ticker";
+import { getPayerMode } from "@/lib/integration/tick";
 import { buttonVariants } from "@/components/ui/button";
-import { readDelimiters } from "@/lib/x12/parse278";
+import { formatEdi } from "@/lib/x12/format";
 
 // Date-only values are stored at UTC midnight, so format them in UTC
 const formatDate = (d: Date) =>
@@ -37,22 +38,6 @@ function humanizeAction(action: string) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** X12 is often stored on one line; put each segment on its own line. */
-function formatEdi(raw: string) {
-  if (raw.includes("\n")) return raw;
-  let terminator = "~";
-  try {
-    terminator = readDelimiters(raw).segment; // the ISA declares the real terminator
-  } catch {
-    // Not a well-formed interchange; fall back to the common "~"
-  }
-  return raw
-    .split(terminator)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => `${s}${terminator}`)
-    .join("\n");
-}
 
 export default function RequestDetailPage({
   params,
@@ -97,6 +82,10 @@ async function RequestDetail({
 
   // Demo stand-in for real auth: the role comes from a cookie (read inside Suspense)
   const role = await getActingRole();
+
+  // Hint only: read through lib/integration, never from payer internals
+  const waitingOnPayer = request.status === "SUBMITTED" || request.status === "IN_REVIEW";
+  const payerManual = waitingOnPayer && (await getPayerMode()) === "MANUAL";
   const transitions: TransitionOption[] = availableTransitions(request.status, role).map(
     (t) => ({
       key: t.key,
@@ -121,7 +110,7 @@ async function RequestDetail({
         </p>
       </header>
 
-      <PayerTicker active={request.status === "SUBMITTED" || request.status === "IN_REVIEW"} />
+      <PayerTicker key={request.status} active={waitingOnPayer} />
 
       <Card className="mb-6">
         <CardHeader>
@@ -135,7 +124,14 @@ async function RequestDetail({
             // Keyed by status: a successful transition remounts the panel fresh
             <ActionsPanel key={request.status} requestId={request.id} transitions={transitions} />
           ) : (
-            <p className="text-sm text-gray-700">{waitingMessage(request.status, role)}</p>
+            <>
+              <p className="text-sm text-gray-700">{waitingMessage(request.status, role)}</p>
+              {payerManual && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Payer is in manual mode, a decision may take longer.
+                </p>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
