@@ -1,8 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { ClipboardCheck, FilePlus2, FileText, Landmark, LayoutDashboard, Menu, type LucideIcon } from "lucide-react";
+import { usePathname, useSearchParams } from "next/navigation";
+import {
+  ClipboardCheck,
+  FilePlus2,
+  FileText,
+  Inbox,
+  Landmark,
+  LayoutDashboard,
+  Menu,
+  type LucideIcon,
+} from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,40 +24,63 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-type NavItem = { label: string; href: string; icon: LucideIcon; isActive: (path: string) => boolean };
+type Role = "STAFF" | "REVIEWER";
+type Location = { path: string; view: string | null };
+type NavItem = { label: string; href: string; icon: LucideIcon; isActive: (l: Location) => boolean };
+
+const isDetail = ({ path }: Location) => path.startsWith("/requests/") && path !== "/requests/new";
+
+const DASHBOARD: NavItem = {
+  label: "Dashboard",
+  href: "/requests",
+  icon: LayoutDashboard,
+  isActive: (l) => l.path === "/requests" && l.view !== "review",
+};
+const REQUESTS: NavItem = { label: "Requests", href: "/requests", icon: FileText, isActive: isDetail };
 
 // "Dashboard" is the work queue for now; "Requests" highlights while viewing one request.
-const MAIN_NAV: NavItem[] = [
-  { label: "Dashboard", href: "/requests", icon: LayoutDashboard, isActive: (p) => p === "/requests" },
-  {
-    label: "Requests",
-    href: "/requests",
-    icon: FileText,
-    isActive: (p) => p.startsWith("/requests/") && p !== "/requests/new",
-  },
-  { label: "New request", href: "/requests/new", icon: FilePlus2, isActive: (p) => p === "/requests/new" },
-];
+const MAIN_NAV: Record<Role, NavItem[]> = {
+  STAFF: [
+    DASHBOARD,
+    REQUESTS,
+    { label: "New request", href: "/requests/new", icon: FilePlus2, isActive: (l) => l.path === "/requests/new" },
+  ],
+  REVIEWER: [
+    DASHBOARD,
+    {
+      label: "Review queue",
+      href: "/requests?view=review",
+      icon: Inbox,
+      isActive: (l) => l.path === "/requests" && l.view === "review",
+    },
+    REQUESTS,
+  ],
+};
 
 const TOOLS_NAV: NavItem[] = [
-  { label: "Payer simulator", href: "/payer", icon: Landmark, isActive: (p) => p.startsWith("/payer") },
+  { label: "Payer simulator", href: "/payer", icon: Landmark, isActive: (l) => l.path.startsWith("/payer") },
 ];
 
-export function Brand({ className }: { className?: string }) {
+/** App name, with the signed-in role title underneath when known. */
+export function Brand({ roleTitle, className }: { roleTitle?: string; className?: string }) {
   return (
-    <Link href="/requests" className={cn("flex items-center gap-2 font-semibold tracking-tight", className)}>
-      <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+    <Link href="/requests" className={cn("flex items-center gap-2.5", className)}>
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
         <ClipboardCheck aria-hidden className="size-4" />
       </span>
-      AuthDesk
+      <span className="min-w-0 leading-tight">
+        <span className="block font-semibold tracking-tight">AuthDesk</span>
+        {roleTitle && <span className="block truncate text-xs text-muted-foreground">{roleTitle}</span>}
+      </span>
     </Link>
   );
 }
 
-function NavLinks({ items, pathname }: { items: NavItem[]; pathname: string | null }) {
+function NavLinks({ items, location }: { items: NavItem[]; location: Location | null }) {
   return (
     <ul className="space-y-0.5">
       {items.map((item) => {
-        const active = pathname !== null && item.isActive(pathname);
+        const active = location !== null && item.isActive(location);
         return (
           <li key={item.label}>
             <Link
@@ -71,46 +103,66 @@ function NavLinks({ items, pathname }: { items: NavItem[]; pathname: string | nu
   );
 }
 
-/** Desktop sidebar body. `pathname` is null in the Suspense fallback (no active item yet). */
-function SidebarBody({ pathname }: { pathname: string | null }) {
+function useLocation(): Location {
+  return { path: usePathname(), view: useSearchParams().get("view") };
+}
+
+/** Desktop sidebar navigation for the signed-in role. */
+export function SidebarNav({ role }: { role: Role }) {
+  const location = useLocation();
   return (
     <nav aria-label="Main" className="flex flex-1 flex-col justify-between px-3 py-4">
-      <NavLinks items={MAIN_NAV} pathname={pathname} />
-      <div>
-        <p className="mb-1.5 px-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">Tools</p>
-        <NavLinks items={TOOLS_NAV} pathname={pathname} />
-      </div>
+      <NavLinks items={MAIN_NAV[role]} location={location} />
+      <ToolsGroup location={location} />
     </nav>
   );
 }
 
-export function SidebarNav() {
-  return <SidebarBody pathname={usePathname()} />;
+/** Shown while the role loads: only the Tools group, which is the same for everyone. */
+export function SidebarNavFallback() {
+  return (
+    <nav aria-label="Main" className="flex flex-1 flex-col justify-between px-3 py-4">
+      <div aria-hidden className="space-y-2 px-2.5 pt-1.5">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-4 w-28 animate-pulse rounded bg-muted" />
+        ))}
+      </div>
+      <ToolsGroup location={null} />
+    </nav>
+  );
 }
 
-export function SidebarNavFallback() {
-  return <SidebarBody pathname={null} />;
+function ToolsGroup({ location }: { location: Location | null }) {
+  return (
+    <div>
+      <p className="mb-1.5 px-2.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">Tools</p>
+      <NavLinks items={TOOLS_NAV} location={location} />
+    </div>
+  );
 }
 
 /** Mobile: a menu button in the top bar that opens the same navigation. */
-export function MobileNav() {
+export function MobileNav({ role }: { role?: Role }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label="Open navigation menu"
+        disabled={!role}
         className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "md:hidden")}
       >
         <Menu aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56">
-        <DropdownMenuGroup>
-          {MAIN_NAV.map((item) => (
-            <DropdownMenuItem key={item.label} render={<Link href={item.href} />}>
-              <item.icon aria-hidden className="text-muted-foreground" />
-              {item.label}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
+        {role && (
+          <DropdownMenuGroup>
+            {MAIN_NAV[role].map((item) => (
+              <DropdownMenuItem key={item.label} render={<Link href={item.href} />}>
+                <item.icon aria-hidden className="text-muted-foreground" />
+                {item.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuGroup>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
           <DropdownMenuLabel>Tools</DropdownMenuLabel>

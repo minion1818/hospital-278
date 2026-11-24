@@ -1,11 +1,12 @@
 import { Suspense, type ReactNode } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { CircleSlash } from "lucide-react";
 import { db } from "@/lib/db";
 import { StatusBadge } from "@/components/status-badge";
 import { Pill, type Tone } from "@/components/pill";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getActingRole } from "@/lib/demo-session";
+import { requireRole } from "@/lib/session";
 import type { RequestStatus } from "@/lib/generated/prisma/enums";
 import { availableTransitions, waitingMessage } from "@/lib/workflow";
 import { ActionsPanel, type TransitionOption } from "./actions-panel";
@@ -38,7 +39,7 @@ const ACTION_LABELS: Record<string, { label: string; tone: Tone }> = {
   CREATED: { label: "Draft created", tone: "neutral" },
   SUBMITTED_FOR_REVIEW: { label: "Submitted for review", tone: "amber" },
   SENT_BACK_TO_STAFF: { label: "Sent back to staff", tone: "orange" },
-  APPROVED_FOR_SUBMISSION: { label: "Approved for submission", tone: "blue" },
+  APPROVED_FOR_SUBMISSION: { label: "Checked by reviewer, 278 created", tone: "blue" },
   SUBMITTED_TO_PAYER: { label: "Sent to payer", tone: "blue" },
   TRANSMISSION_FAILED: { label: "Transmission to payer failed", tone: "red" },
   PAYER_IN_REVIEW: { label: "Payer review started", tone: "indigo" },
@@ -73,6 +74,9 @@ export default function RequestDetailPage({ params }: PageProps<"/requests/[id]"
 }
 
 async function RequestDetail({ params }: { params: PageProps<"/requests/[id]">["params"] }) {
+  // Stand-in for real auth: the signed-in role comes from a cookie (read inside
+  // Suspense and re-validated; signed out redirects to /login)
+  const role = await requireRole();
   const { id } = await params;
   const request = await db.priorAuthRequest.findUnique({
     where: { id },
@@ -91,9 +95,6 @@ async function RequestDetail({ params }: { params: PageProps<"/requests/[id]">["
   const showDecision = request.decisionAt != null || request.decisionReason != null;
   // A reopened request keeps the payer's earlier decision so staff can see what to fix
   const decisionIsCurrent = DECIDED_STATUSES.has(request.status);
-
-  // Stand-in for real auth: the role comes from a cookie (read inside Suspense)
-  const role = await getActingRole();
 
   // Hint only: read through lib/integration, never from payer internals
   const waitingOnPayer = request.status === "SUBMITTED" || request.status === "IN_REVIEW";
@@ -144,6 +145,7 @@ async function RequestDetail({ params }: { params: PageProps<"/requests/[id]">["
               unitsApproved={request.unitsApproved}
               unitsRequested={request.unitsRequested}
               authorizationNumber={request.authorizationNumber}
+              payerName={request.patient.payerName}
             />
           )}
 
@@ -214,13 +216,17 @@ async function RequestDetail({ params }: { params: PageProps<"/requests/[id]">["
                 // Keyed by status: a successful transition remounts the panel fresh
                 <ActionsPanel key={request.status} requestId={request.id} transitions={transitions} />
               ) : (
-                <div className="space-y-1">
-                  <p className="text-sm text-foreground">{waitingMessage(request.status, role)}</p>
-                  {payerManual && (
-                    <p className="text-xs text-muted-foreground">
-                      The payer is reviewing this request manually, so a decision may take longer.
-                    </p>
-                  )}
+                <div className="flex gap-3 rounded-lg border border-dashed px-3 py-3">
+                  <CircleSlash aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">No actions available</p>
+                    <p className="text-sm text-muted-foreground">{waitingMessage(request.status, role)}</p>
+                    {payerManual && (
+                      <p className="text-xs text-muted-foreground">
+                        The payer is reviewing this request manually, so a decision may take longer.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -288,6 +294,7 @@ function DecisionCard({
   unitsApproved,
   unitsRequested,
   authorizationNumber,
+  payerName,
 }: {
   current: boolean;
   status: RequestStatus;
@@ -296,6 +303,7 @@ function DecisionCard({
   unitsApproved: number | null;
   unitsRequested: number;
   authorizationNumber: string | null;
+  payerName: string;
 }) {
   return (
     <Card>
@@ -310,6 +318,7 @@ function DecisionCard({
           <div className="rounded-lg bg-green-50 px-4 py-3 ring-1 ring-green-600/20">
             <p className="text-xs font-medium tracking-wide text-green-800 uppercase">Authorization number</p>
             <p className="mt-0.5 font-mono text-xl font-semibold tracking-wide text-green-950">{authorizationNumber}</p>
+            <p className="mt-1 text-xs text-green-800">Issued by {payerName} in its 278 response</p>
           </div>
         )}
         <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">

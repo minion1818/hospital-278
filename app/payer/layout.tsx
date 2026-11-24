@@ -27,7 +27,7 @@ export default function PayerLayout({ children }: LayoutProps<"/payer">) {
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <ArrowLeft aria-hidden className="size-4" />
-            Back to AuthDesk
+            Back to hospital app
           </Link>
         </div>
       </header>

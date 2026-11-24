@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { canCreateRequests } from "@/lib/auth/roles";
+import { getSessionUser, requireRole } from "@/lib/session";
 import { findProcedure, findProvider } from "@/lib/catalog";
 import {
   EMPTY_NEW_REQUEST_VALUES,
@@ -38,6 +40,18 @@ export async function createDraftRequest(
     attempt: prevState.attempt + 1,
   });
 
+  // Role gate first, before validation or any database write. Stand-in for real
+  // authentication: the signed-in role comes from the re-validated role cookie
+  // (signed out redirects to /login).
+  const role = await requireRole();
+  if (!canCreateRequests(role)) {
+    return fail({}, "Only the Authorization Specialist can create requests. Nothing was saved.");
+  }
+  const staff = await getSessionUser();
+  if (!staff) {
+    return fail({}, "No user accounts are set up yet. Seed the database, then try again.");
+  }
+
   const parsed = newRequestSchema.safeParse(values);
   if (!parsed.success) {
     return fail(
@@ -54,13 +68,6 @@ export async function createDraftRequest(
   const patient = await db.patient.findUnique({ where: { id: data.patientId }, select: { id: true } });
   if (!patient) {
     return fail({ patientId: ["That patient no longer exists. Pick another."] });
-  }
-
-  // TODO(auth): real authentication comes later. Until then every draft is
-  // created by the seeded staff user.
-  const staff = await db.user.findUnique({ where: { email: "staff@demo.test" } });
-  if (!staff) {
-    return fail({}, "No staff user account is set up yet. Seed the database, then try again.");
   }
 
   const created = await db.$transaction(async (tx) => {

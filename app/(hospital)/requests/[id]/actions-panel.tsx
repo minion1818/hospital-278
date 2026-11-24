@@ -39,8 +39,8 @@ const UI: Record<
     success: "Request sent to payer",
     confirm: {
       title: "Send this request to the payer?",
-      body: "A 278 request will be generated and transmitted to the payer. Once sent, it can't be recalled.",
-      button: "Approve and send",
+      body: "A 278 request will be generated and sent to the payer. The payer reviews it and, if it approves, issues the authorization number. Once sent, it can't be recalled.",
+      button: "Send to payer",
     },
   },
   SEND_BACK: { variant: "outline", success: "Sent back to staff" },

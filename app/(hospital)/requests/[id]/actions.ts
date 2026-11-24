@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { getActingUser } from "@/lib/demo-session";
+import { getSessionUser } from "@/lib/session";
 import { TRANSITION_KEYS } from "@/lib/workflow";
 import { applyTransition } from "@/lib/workflow-db";
 
@@ -34,8 +34,9 @@ export async function runTransition(
   }
   const { requestId, action, note } = parsed.data;
 
-  // Stand-in for real authentication: the role comes from a cookie
-  const actor = await getActingUser();
+  // Stand-in for real authentication: the signed-in role comes from a cookie,
+  // re-validated here (signed out redirects to /login)
+  const actor = await getSessionUser();
   if (!actor) {
     return { ok: false, error: "No user accounts are set up yet. Seed the database, then try again.", attempt };
   }

@@ -3,6 +3,7 @@ import type { RequestStatus } from "../lib/generated/prisma/enums";
 // Shared client: the payer inbox (used below via the orchestrator) writes through it too
 import { db as prisma } from "../lib/db";
 import { PAYERS, findPayer } from "../lib/catalog";
+import { ROLE_ACCOUNTS } from "../lib/auth/roles";
 import { submitToPayer } from "../lib/integration/tick";
 import { generate278Request } from "../lib/x12/generate278";
 import { build278Input } from "../lib/x12/from-request";
@@ -226,11 +227,12 @@ async function main() {
   await prisma.patient.deleteMany();
   await prisma.user.deleteMany();
 
+  // One shared account per role; signing in on /login picks one of these
   const staff = await prisma.user.create({
-    data: { name: "Sam Rivera", email: "staff@demo.test", role: "STAFF" },
+    data: { name: ROLE_ACCOUNTS.STAFF.name, email: ROLE_ACCOUNTS.STAFF.email, role: "STAFF" },
   });
   const reviewer = await prisma.user.create({
-    data: { name: "Dana Lee", email: "reviewer@demo.test", role: "REVIEWER" },
+    data: { name: ROLE_ACCOUNTS.REVIEWER.name, email: ROLE_ACCOUNTS.REVIEWER.email, role: "REVIEWER" },
   });
 
   const patientData = [
@@ -332,7 +334,7 @@ async function main() {
   }
 
   console.log(
-    `Seeded 2 users, ${patients.length} patients, ${REQUESTS.length} requests (${ediCount} with a generated 278), ${logCount} audit log entries. ` +
+    `Seeded 2 role accounts, ${patients.length} patients, ${REQUESTS.length} requests (${ediCount} with a generated 278), ${logCount} audit log entries. ` +
       `Payer: settings AUTO 2s/8s, ${memberCount} roster members (1 inactive, Zed Unknown not on roster), ${messageCount} queued messages.`,
   );
 }

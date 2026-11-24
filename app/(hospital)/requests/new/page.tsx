@@ -1,8 +1,14 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
+import Link from "next/link";
+import { ShieldX } from "lucide-react";
 import { db } from "@/lib/db";
 import { todayIsoDate } from "@/lib/validation/request";
 import { PageContainer, PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
+import { buttonVariants } from "@/components/ui/button";
+import { ROLE_TITLES, canCreateRequests } from "@/lib/auth/roles";
+import { requireRole } from "@/lib/session";
 import { FormSkeleton } from "@/components/skeletons";
 import { NewRequestForm, type PatientOption } from "./new-request-form";
 
@@ -26,6 +32,24 @@ export default function NewRequestPage() {
 }
 
 async function NewRequestFormLoader() {
+  // Server-side role gate (the action checks again): only the Authorization
+  // Specialist creates requests
+  const role = await requireRole();
+  if (!canCreateRequests(role)) {
+    return (
+      <EmptyState
+        icon={ShieldX}
+        title="You don't have access to this page"
+        description={`New requests are created by the ${ROLE_TITLES.STAFF}. You're signed in as the ${ROLE_TITLES[role]}.`}
+        action={
+          <Link href="/requests?view=review" className={buttonVariants({ variant: "outline" })}>
+            Go to review queue
+          </Link>
+        }
+      />
+    );
+  }
+
   const patients = await db.patient.findMany({
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });

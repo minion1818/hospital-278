@@ -1,14 +1,18 @@
 # AuthDesk
 
-A prior authorization workspace for hospital authorization staff and utilization
-reviewers, built around the X12 278 (005010X217) request and response.
+A prior authorization workspace for hospital Authorization Specialists and Utilization
+Reviewers, built around the X12 278 (005010X217) request and response.
 
 > **Demonstration environment.** All patient, provider and payer data is synthetic. The
 > insurance company is simulated. The same disclosure appears in the app under
-> **User menu → About AuthDesk**.
+> **Account menu → About AuthDesk**.
+>
+> **Sign-in is a stand-in for real authentication.** There are no passwords: choosing a
+> role on `/login` sets an unsigned, httpOnly session cookie, and anyone can pick either
+> role. Replace it with a real identity provider before any real use.
 
-Staff create requests and submit them for review; reviewers approve and send them to the
-payer as a 278; the payer's 278 response updates the request (approved, partially
+The Authorization Specialist creates requests and submits them for review; the Utilization
+Reviewer approves them and sends them to the payer as a 278; the payer's 278 response updates the request (approved, partially
 approved, denied, pended or rejected). A separate **Payer simulator** (`/payer`) plays
 the insurance company.
 
@@ -17,34 +21,70 @@ the insurance company.
 ```bash
 docker compose up -d          # Postgres (restarts with Docker Desktop)
 npx prisma migrate deploy     # apply migrations
-npx prisma db seed            # synthetic patients, users and requests
-npm run dev                   # http://localhost:3000 (redirects to /requests)
+npx prisma db seed            # synthetic patients, role accounts and requests
+npm run dev                   # http://localhost:3000 (opens /login when signed out)
 ```
+
+> **Upgrading from an earlier checkout?** Rerun `npx prisma db seed`. The seed now creates
+> two role accounts (*Authorization Specialist*, `authorization.specialist@authdesk.test`,
+> and *Utilization Reviewer*, `utilization.reviewer@authdesk.test`) in place of the old
+> named users, and recreates the audit log with those names. Until you reseed, actions
+> fail with "No user accounts are set up yet".
 
 Checks: `npm test` (unit tests), `npm run test:flow` (end-to-end flow against a test
 database), `npx tsc --noEmit` and `npm run lint`.
 
 ## Using the app
 
+- **Sign in** (`/login`): pick **Authorization Specialist** or **Utilization Reviewer**.
+  Signed-out visitors are sent here from every hospital page (`proxy.ts` checks the
+  cookie first; `lib/session.ts` re-validates it on the server). The payer simulator
+  stays open without signing in.
+- **Two workspaces:**
+  - *Authorization Specialist* (role `STAFF`) lands on `/requests`. Sidebar: Dashboard,
+    Requests, New request. Creates drafts, submits them for review, reopens pended,
+    rejected or denied requests, and marks approved services completed.
+  - *Utilization Reviewer* (role `REVIEWER`) lands on the review queue
+    (`/requests?view=review`). Sidebar: Dashboard, Review queue, Requests (no New
+    request; `/requests/new` and its Server Action refuse this role). Approves and sends
+    requests to the payer, or sends them back with a note.
+  - On a request, each role only sees its own actions; otherwise the Actions card says
+    who the request is waiting on.
 - **Dashboard / Requests** (`/requests`): the work queue. Filter by *All*, *Review queue*
   or *Needs attention*, and search by patient name or member ID.
 - **New request** (`/requests/new`): saved as a draft; nothing goes to the payer yet.
 - **Request detail**: key facts, the payer decision (with the authorization number),
   collapsible EDI 278 request and response with Copy and Download, the actions you can
   take, and the status timeline.
-- **User menu** (top right): switch between the two seeded users, **Sam Rivera**
-  (Authorization Specialist, role `STAFF`) and **Dana Lee** (Utilization Reviewer, role
-  `REVIEWER`). This is a stand-in for real sign-in: it sets an unsigned cookie
-  (`lib/demo-session.ts`), so it must be replaced before any real use.
+- **Account menu** (top right): shows the signed-in role, **About AuthDesk** and
+  **Sign out** (clears the role cookie and returns to `/login`).
 - **Payer simulator** (sidebar → Tools): the simulated insurance company, described below.
+
+## Walkthrough
+
+1. Sign in as **Authorization Specialist**. Choose **New request**, fill it in and save the
+   draft, then **Submit for review**.
+2. **Sign out** (account menu, top right).
+3. Sign in as **Utilization Reviewer**. You land on the review queue; open the request and
+   **Send to payer**.
+4. **Sign out**.
+5. Sign in as **Authorization Specialist** again to follow up: once the payer responds
+   (a few seconds in Automatic mode), the request shows the decision. If approved, choose
+   **Mark service completed**; if pended, rejected or denied, **Reopen as draft**, fix it
+   and submit again.
 
 ## 278 generation
 
-When a reviewer clicks **Approve and send to payer**, the app builds an X12 278
+When a reviewer clicks **Send to payer**, the app builds an X12 278
 (Health Care Services Review: Request) for the request, stores it in
 `PriorAuthRequest.raw278Request`, and logs "Submitted to payer" with the control
 number. The detail page shows it with **Copy** and **Download .edi**
 (`/requests/<id>/278`).
+
+The reviewer only checks the request and releases it: the hospital never creates an
+authorization number. The payer makes the coverage decision and, when it approves or
+partially approves, issues the authorization number in its 278 response (`HCR02`); the
+hospital reads it from there and stores it on the request.
 
 > **Demonstration only.** The output follows the **005010X217** loop structure in a
 > simplified form (one patient event, one service line). It has **not** been
@@ -215,7 +255,7 @@ attachment transaction (`clinicalNotesAttached`, `conservativeTreatmentDocumente
 ```
  HOSPITAL (lib/workflow-db, lib/hospital)     ORCHESTRATOR (lib/integration)      PAYER (lib/payer)
  ────────────────────────────────────────     ──────────────────────────────      ─────────────────
- Reviewer: Approve and send
+ Reviewer: Send to payer
    generate 278, status SUBMITTED  ───────▶   submitToPayer(278, attachments) ──▶ receive278 → PayerMessage RECEIVED
                                                                                    (ack in 2s, respond in 8s)
  Browser on a waiting request  ───────────▶   POST /api/payer/tick → tick(now) ──▶ processDue(now)
@@ -293,8 +333,9 @@ The console never touches hospital data. Delivery still happens through
 
 **Demo workflow**
 1. Open `/payer` and switch the mode to **Manual review**. Save.
-2. In AuthDesk (`/requests`), switch user to **Dana Lee** (Utilization Reviewer) and
-   *Approve and send to payer* three pending requests (or create new ones).
+2. In AuthDesk, sign in as **Utilization Reviewer** and *Send to payer* three
+   requests from the review queue (or sign in as Authorization Specialist to create and
+   submit new ones first).
 3. Back in `/payer`, they appear under **Waiting for decision**. Open one and **Approve**
    it, open the next and **Deny** it with a reason, then **Pend** the third, asking for
    documentation.

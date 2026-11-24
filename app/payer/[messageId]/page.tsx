@@ -96,6 +96,7 @@ async function MessageDetail({ params }: { params: PageProps<"/payer/[messageId]
                     <p className="mt-0.5 font-mono text-xl font-semibold tracking-wide text-green-950">
                       {m.authorizationNumber}
                     </p>
+                    <p className="mt-1 text-xs text-green-800">Issued by this payer and sent to the hospital in the 278 response</p>
                   </div>
                 )}
                 <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">

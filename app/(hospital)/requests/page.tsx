@@ -19,6 +19,8 @@ import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TableBody, TableCell, TableHead } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { canCreateRequests } from "@/lib/auth/roles";
+import { getSessionRole, requireRole } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Requests" };
 
@@ -76,10 +78,10 @@ export default function RequestsPage({ searchParams }: PageProps<"/requests">) {
         }
         subtitle="Track every request from draft to payer decision."
         actions={
-          <Link href="/requests/new" className={buttonVariants()}>
-            <Plus aria-hidden />
-            New request
-          </Link>
+          // Only the Authorization Specialist creates requests (role cookie: request-time data)
+          <Suspense fallback={null}>
+            <NewRequestButton />
+          </Suspense>
         }
       />
       {/* searchParams and the DB read are request-time data, so both stay inside Suspense */}
@@ -97,6 +99,17 @@ export default function RequestsPage({ searchParams }: PageProps<"/requests">) {
   );
 }
 
+async function NewRequestButton() {
+  const role = await getSessionRole();
+  if (!role || !canCreateRequests(role)) return null;
+  return (
+    <Link href="/requests/new" className={buttonVariants()}>
+      <Plus aria-hidden />
+      New request
+    </Link>
+  );
+}
+
 async function TotalCount() {
   const total = await db.priorAuthRequest.count();
   return (
@@ -107,6 +120,8 @@ async function TotalCount() {
 }
 
 async function RequestsQueue({ searchParams }: { searchParams: PageProps<"/requests">["searchParams"] }) {
+  // Re-validates the sign-in before reading request data (signed out redirects to /login)
+  const role = await requireRole();
   const sp = await searchParams;
   const view = parseView(sp.view);
   const q = parseQuery(sp.q);
@@ -195,7 +210,8 @@ async function RequestsQueue({ searchParams }: { searchParams: PageProps<"/reque
                 : "You're all caught up. Requests will appear here when they need you."
             }
             action={
-              view === "all" && (
+              view === "all" &&
+              canCreateRequests(role) && (
                 <Link href="/requests/new" className={buttonVariants()}>
                   <Plus aria-hidden />
                   New request

@@ -6,10 +6,6 @@ const nextConfig: NextConfig = {
   },
   cacheComponents: true,
   partialPrefetching: true,
-  // There is no landing page: "/" opens the request work queue
-  async redirects() {
-    return [{ source: "/", destination: "/requests", permanent: false }];
-  },
   turbopack: {
     rules: {
       "*.css": {

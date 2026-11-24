@@ -6,6 +6,7 @@
 // PENDED, REJECTED) are set by the simulated payer, not by these transitions.
 
 import type { RequestStatus, Role } from "@/lib/generated/prisma/enums";
+import { ROLE_TITLES } from "@/lib/auth/roles";
 
 export const TRANSITION_KEYS = [
   "SUBMIT_FOR_REVIEW",
@@ -96,8 +97,10 @@ export const TRANSITIONS: Record<TransitionKey, Transition> = {
   },
   APPROVE_AND_SEND: {
     key: "APPROVE_AND_SEND",
-    label: "Approve and send to payer",
-    description: "Approve internally and transmit the 278 request to the payer.",
+    // The reviewer only checks the request and releases it. The payer makes the
+    // coverage decision and issues the authorization number (278 response, HCR02).
+    label: "Send to payer",
+    description: "Confirm the request is complete and send the 278 to the payer. The payer decides and issues the authorization number.",
     roles: ["REVIEWER"],
     from: ["PENDING_REVIEW"],
     to: "SUBMITTED",
@@ -144,17 +147,6 @@ export const TRANSITIONS: Record<TransitionKey, Transition> = {
   },
 };
 
-export const ROLE_LABELS: Record<Role, string> = {
-  STAFF: "Staff",
-  REVIEWER: "Reviewer",
-};
-
-/** Job titles shown in the user menu (display only; the enum values stay STAFF / REVIEWER). */
-export const ROLE_TITLES: Record<Role, string> = {
-  STAFF: "Authorization Specialist",
-  REVIEWER: "Utilization Reviewer",
-};
-
 /** Transitions the given role may apply to a request in the given status. */
 export function availableTransitions(status: RequestStatus, role: Role): Transition[] {
   return Object.values(TRANSITIONS).filter(
@@ -180,7 +172,7 @@ export function checkTransition(
   if (!t.roles.includes(role)) {
     return {
       ok: false,
-      error: `Only ${t.roles.map((r) => ROLE_LABELS[r]).join(" or ")} can "${t.label.toLowerCase()}". Switch user to continue.`,
+      error: `Only the ${t.roles.map((r) => ROLE_TITLES[r]).join(" or ")} can "${t.label.toLowerCase()}". Sign in with that role to continue.`,
     };
   }
   if (!t.from.includes(currentStatus)) {
@@ -213,7 +205,8 @@ export function auditEntriesFor(
 }
 
 /**
- * Explains who can act next when the given role has no buttons for this status.
+ * Explains who can act next when the given role has no buttons for this status
+ * (shown as the empty state of the Actions card).
  * Derived from TRANSITIONS where possible, so it stays in sync with the rules.
  */
 export function waitingMessage(status: RequestStatus, role: Role): string {
@@ -221,14 +214,14 @@ export function waitingMessage(status: RequestStatus, role: Role): string {
     (t) => t.from.includes(status) && !t.roles.includes(role),
   );
   if (others.length > 0) {
-    const roles = [...new Set(others.flatMap((t) => t.roles))].map((r) => ROLE_LABELS[r]);
+    const roles = [...new Set(others.flatMap((t) => t.roles))].map((r) => `the ${ROLE_TITLES[r]}`);
     const labels = others.map((t) => t.label.toLowerCase()).join(" or ");
-    return `Waiting on ${roles.join(" or ")}: they can ${labels}.`;
+    return `No actions for the ${ROLE_TITLES[role]} on this request. It is waiting on ${roles.join(" or ")}, who can ${labels}.`;
   }
   switch (status) {
     case "SUBMITTED":
     case "IN_REVIEW":
-      return "Waiting on payer. No action is needed until the payer responds.";
+      return `No actions for the ${ROLE_TITLES[role]} on this request. It is waiting on the payer's decision.`;
     case "SERVICE_COMPLETED":
       return "This request is complete. No further actions.";
     default:

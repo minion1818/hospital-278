@@ -62,6 +62,20 @@ async function main() {
   const { parse278 } = await import("@/lib/x12/parse278");
   const { decideManually, suggestDecision, ManualDecisionError } = await import("@/lib/payer/console");
   const { evaluateRequest, payerRequestFromParsed } = await import("@/lib/payer/rules");
+  const { ROLE_ACCOUNTS, parseRoleCookie } = await import("@/lib/auth/roles");
+  const { findRoleAccount } = await import("@/lib/auth/accounts");
+
+  /**
+   * Signs in by role the way the app does (stand-in for real authentication):
+   * the role cookie value is validated, then resolved to that role's account.
+   */
+  const signInAs = async (cookieValue: string) => {
+    const role = parseRoleCookie(cookieValue);
+    if (!role) throw new Error(`Not a valid role: ${cookieValue}`);
+    const account = await findRoleAccount(db, role);
+    if (!account) throw new Error(`No account for ${role}`);
+    return account;
+  };
 
   try {
     // ---------------- fixtures (test database only) ----------------
@@ -74,9 +88,12 @@ async function main() {
     await db.user.deleteMany();
 
     await db.payerSettings.create({ data: { id: 1, mode: "AUTO", ackDelaySeconds: 2, responseDelaySeconds: 8 } });
-    const staffUser = await db.user.create({ data: { name: "Flow Staff", email: "staff@flow.test", role: "STAFF" } });
-    const reviewerUser = await db.user.create({ data: { name: "Flow Reviewer", email: "reviewer@flow.test", role: "REVIEWER" } });
-    const reviewer = { id: reviewerUser.id, name: reviewerUser.name, role: "REVIEWER" as const };
+    // The same role accounts as prisma/seed.ts
+    for (const role of ["STAFF", "REVIEWER"] as const) {
+      await db.user.create({ data: { name: ROLE_ACCOUNTS[role].name, email: ROLE_ACCOUNTS[role].email, role } });
+    }
+    const specialist = await signInAs("STAFF");
+    const reviewer = await signInAs("REVIEWER");
 
     const john = await db.patient.create({ data: { firstName: "John", lastName: "Doe", dob: new Date("1980-01-15"), gender: "M", memberId: "W123456789", payerName: "ACME Health Plan" } });
     const zed = await db.patient.create({ data: { firstName: "Zed", lastName: "Unknown", dob: new Date("1985-04-20"), gender: "M", memberId: "W999000001", payerName: "ACME Health Plan" } });
@@ -109,7 +126,7 @@ async function main() {
           unitsRequested: o.units ?? 1,
           clinicalNotesAttached: o.notes,
           conservativeTreatmentTried: o.conservative ?? true,
-          createdById: staffUser.id,
+          createdById: specialist.id,
         },
       });
 
@@ -451,6 +468,85 @@ async function main() {
         T += 100;
       }
       await db.payerSettings.update({ where: { id: 1 }, data: { mode: "AUTO" } });
+    }
+
+    // ---------------- role journey ----------------
+    console.log("\nRole journey: Specialist creates and submits, Reviewer sends, payer decides, Specialist completes");
+    {
+      const J = 2000; // seconds after t0, clear of the sections above
+      let signInRefused = false;
+      try {
+        await signInAs("ADMIN");
+      } catch {
+        signInRefused = true;
+      }
+      check("signing in with an unknown role is refused", signInRefused);
+
+      const asSpecialist = await signInAs("STAFF");
+      check("Specialist signs in as the Authorization Specialist account", asSpecialist.name === "Authorization Specialist" && asSpecialist.role === "STAFF", asSpecialist);
+      // Same rows the new-request Server Action writes for the signed-in Specialist
+      const draft = await db.priorAuthRequest.create({
+        data: {
+          status: "DRAFT",
+          patientId: john.id,
+          providerName: "Jane Smith",
+          providerNpi: "1234567893",
+          diagnosisCode: "M17.11",
+          procedureCode: "73721",
+          serviceDate: utcMidnightIn(7),
+          unitsRequested: 1,
+          clinicalNotesAttached: true,
+          conservativeTreatmentTried: true,
+          createdById: asSpecialist.id,
+        },
+      });
+      await db.auditLog.create({ data: { requestId: draft.id, actor: asSpecialist.name, action: "CREATED", details: "Draft created for MRI knee" } });
+
+      const asReviewer = await signInAs("REVIEWER");
+      let res = await applyTransition(db, { requestId: draft.id, key: "SUBMIT_FOR_REVIEW", actor: asReviewer, now: at(J + 1) });
+      check("Reviewer cannot submit a draft for review", !res.ok && (await status(draft.id)) === "DRAFT", res);
+
+      res = await applyTransition(db, { requestId: draft.id, key: "SUBMIT_FOR_REVIEW", actor: asSpecialist, now: at(J + 2) });
+      check("Specialist submits for review -> PENDING_REVIEW", res.ok && res.to === "PENDING_REVIEW", res);
+
+      res = await applyTransition(db, { requestId: draft.id, key: "APPROVE_AND_SEND", actor: asSpecialist, now: at(J + 3) });
+      check(
+        "Specialist cannot approve and send",
+        !res.ok && /Only the Utilization Reviewer/.test(res.error) && (await status(draft.id)) === "PENDING_REVIEW",
+        res,
+      );
+
+      res = await applyTransition(db, { requestId: draft.id, key: "APPROVE_AND_SEND", actor: asReviewer, now: at(J + 4) });
+      check("Reviewer approves and sends -> SUBMITTED, transmitted", res.ok && res.to === "SUBMITTED" && res.transmission?.ok === true, res);
+
+      await tick(at(J + 6)); // acknowledge (2s)
+      await tick(at(J + 12)); // respond (8s)
+      check("payer decides automatically -> APPROVED", (await status(draft.id)) === "APPROVED", await status(draft.id));
+
+      res = await applyTransition(db, { requestId: draft.id, key: "MARK_SERVICE_COMPLETED", actor: asReviewer, now: at(J + 20) });
+      check("Reviewer cannot mark the service completed", !res.ok && (await status(draft.id)) === "APPROVED", res);
+
+      res = await applyTransition(db, { requestId: draft.id, key: "MARK_SERVICE_COMPLETED", actor: asSpecialist, now: at(J + 21) });
+      check("Specialist marks the service completed -> SERVICE_COMPLETED", res.ok && res.to === "SERVICE_COMPLETED", res);
+
+      // Who did what (audit times mix injected and real clocks, so order isn't compared)
+      const trail = (await db.auditLog.findMany({ where: { requestId: draft.id } })).map((l) => `${l.action}:${l.actor}`).sort();
+      check(
+        "audit trail names the role accounts",
+        JSON.stringify(trail) ===
+          JSON.stringify(
+            [
+              "CREATED:Authorization Specialist",
+              "SUBMITTED_FOR_REVIEW:Authorization Specialist",
+              "APPROVED_FOR_SUBMISSION:Utilization Reviewer",
+              "SUBMITTED_TO_PAYER:Utilization Reviewer",
+              "PAYER_IN_REVIEW:Payer (simulated)",
+              "PAYER_APPROVED:Payer (simulated)",
+              "SERVICE_COMPLETED:Authorization Specialist",
+            ].sort(),
+          ),
+        trail,
+      );
     }
 
     // ---------------- garbage in ----------------
